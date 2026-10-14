@@ -2690,11 +2690,11 @@ void GDScriptAnalyzer::resolve_function_signature(GDScriptParser::FunctionNode *
 		if (p_function->return_type != nullptr) {
 			p_function->return_type_constraint = type_from_metatype(resolve_datatype(p_function->return_type));
 		} else {
-			// In case the function is not typed, we can safely assume it's a Variant, so it's okay to mark as "inferred" here.
-			// It's not "undetected" to not mix up with unknown functions.
+			/// in case the return type is untyped, we infer it, but by default, it is void
 			GDScriptParser::DataType return_type;
 			return_type.type_source = GDScriptParser::DataType::INFERRED;
-			return_type.kind = GDScriptParser::DataType::VARIANT;
+			return_type.kind = GDScriptParser::DataType::BUILTIN;
+			return_type.builtin_type = Variant::NIL;
 			p_function->return_type_constraint = return_type;
 		}
 
@@ -2976,7 +2976,9 @@ void GDScriptAnalyzer::resolve_suite(GDScriptParser::SuiteNode *p_suite, bool p_
 			p_suite->suite_type.type_source = GDScriptParser::DataType::UNDETECTED;
 		} else {
 			p_suite->suite_type = statement_type;
-			p_suite->suite_type.type_source = GDScriptParser::DataType::INFERRED;
+			if (!p_suite->suite_type.is_hard_type()) {
+				p_suite->suite_type.type_source = GDScriptParser::DataType::INFERRED;
+			}
 		}
 	}
 #ifdef DEBUG_ENABLED
@@ -3836,6 +3838,13 @@ void GDScriptAnalyzer::resolve_return(GDScriptParser::ReturnNode *p_return) {
 				update_const_expression_builtin_type(p_return->return_value, expected_type, "return");
 			}
 			result = p_return->return_value->type_constraint;
+			if (result.kind == GDScriptParser::DataType::BUILTIN && 
+				result.builtin_type == Variant::NIL && 
+				!(has_expected_type && expected_type.is_hard_type() && !expected_type.is_variant())) {
+
+				result.kind = GDScriptParser::DataType::VARIANT;
+				result.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
+			}
 		}
 	}
 

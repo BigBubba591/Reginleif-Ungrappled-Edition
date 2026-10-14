@@ -119,7 +119,7 @@ public:
 			RESOLVING, // Currently resolving.
 			UNRESOLVED,
 
-			/// allows us to tell Godot that this type is 
+			/// allows us to tell Godot that this type is
 			/// generic and links against a specified generic parameter.
 			GENERIC_TYPE,
 
@@ -255,7 +255,7 @@ public:
 					return native_type == p_other.native_type;
 				case SCRIPT:
 					return script_type == p_other.script_type;
-				
+
 				/// [Monarch] Classes are now only equal if they have the same fqcn and the same generic params.
 				case CLASS:
 					if (class_type != p_other.class_type && class_type->fqcn != p_other.class_type->fqcn) {
@@ -274,8 +274,8 @@ public:
 
 				/// [Monarch] Now scoped to the declaring class so that Shit[T] doesnt equal Ass[T]
 				case GENERIC_TYPE:
-					return generic_owner_class == p_other.generic_owner_class && 
-					       generic_param == p_other.generic_param && 
+					return generic_owner_class == p_other.generic_owner_class &&
+					       generic_param == p_other.generic_param &&
 						   generic_owner_function == p_other.generic_owner_function;
 
 				case TRAIT_OBJECT:
@@ -288,7 +288,7 @@ public:
 						}
 					}
 					return true;
-				
+
 				case RESOLVING:
 				case UNRESOLVED:
 					break;
@@ -413,7 +413,7 @@ public:
 			UNARY_OPERATOR,
 			VARIABLE,
 			WHILE,
-			
+
 			///
 			TRAIT,
 			IMPL,
@@ -1731,6 +1731,7 @@ private:
 	GDScriptTokenizer::Token advance();
 	bool match(GDScriptTokenizer::Token::Type p_token_type);
 	bool check(GDScriptTokenizer::Token::Type p_token_type) const;
+	bool allman_check(bool should_advance);
 	bool consume(GDScriptTokenizer::Token::Type p_token_type, const String &p_error_message);
 	bool is_at_end() const;
 	bool is_statement_end_token() const;
@@ -1788,6 +1789,9 @@ private:
 	bool warning_ignore_region_annotations(AnnotationNode *p_annotation, Node *p_target, ClassNode *p_class);
 	bool rpc_annotation(AnnotationNode *p_annotation, Node *p_target, ClassNode *p_class);
 	// Statements.
+
+	bool brace_check(bool should_advance = false);
+
 	Node *parse_statement();
 	VariableNode *parse_variable(bool p_is_static);
 	VariableNode *parse_variable(bool p_is_static, bool p_allow_property);

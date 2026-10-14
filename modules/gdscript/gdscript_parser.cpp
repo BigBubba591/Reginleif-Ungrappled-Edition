@@ -32,6 +32,7 @@
 #include "gdscript_cache.h"
 
 #include "gdscript.h"
+#include "gdscript_tokenizer.h"
 #include "gdscript_tokenizer_buffer.h"
 
 #include "core/config/project_settings.h"
@@ -450,8 +451,8 @@ void GDScriptParser::set_last_completion_call_arg(int p_argument) {
 void GDScriptParser::consume_indents_and_newlines() {
 	while  (check(GDScriptTokenizer::Token::NEWLINE) ||
 			check(GDScriptTokenizer::Token::INDENT)  ||
-			check(GDScriptTokenizer::Token::DEDENT)) { 
-				advance(); 
+			check(GDScriptTokenizer::Token::DEDENT)) {
+				advance();
 			}
 }
 
@@ -622,6 +623,23 @@ bool GDScriptParser::check(GDScriptTokenizer::Token::Type p_token_type) const {
 	}
 	return current.type == p_token_type;
 }
+
+bool GDScriptParser::allman_check(bool should_advance) {
+	if (!check(GDScriptTokenizer::Token::NEWLINE)) {
+		return false;
+	}
+
+	if (should_advance) {
+		advance();
+	}
+
+	if (check(GDScriptTokenizer::Token::BRACE_OPEN)) {
+		return true;
+	}
+
+	return false;
+}
+
 
 bool GDScriptParser::consume(GDScriptTokenizer::Token::Type p_token_type, const String &p_error_message) {
 	if (match(p_token_type)) {
@@ -811,7 +829,7 @@ void GDScriptParser::parse_program() {
 		if (!check(GDScriptTokenizer::Token::TK_EOF)) {
 			push_error(R"([Reginleif] Unexpected item after trait declaration. A trait file must contain only its trait and, optionally, "impl" blocks for it.)");
 		}
-		
+
 		clear_unused_annotations();
 		return;
 	}
@@ -1013,7 +1031,7 @@ GDScriptParser::ClassNode *GDScriptParser::parse_class(bool p_is_static) {
 	}
 
 	///
-	bool use_braces = check(GDScriptTokenizer::Token::BRACE_OPEN);
+	bool use_braces = brace_check(true);
 	if (!use_braces) {
 		consume(GDScriptTokenizer::Token::COLON, R"([Reginleif] Expected ":" or "{" after class declaration.)");
 	}
@@ -1076,7 +1094,7 @@ void GDScriptParser::parse_class_name() {
 	}
 }
 
-/// [Monarch] Here's where Reginleif adds the ability to parse generics parameters! 
+/// [Monarch] Here's where Reginleif adds the ability to parse generics parameters!
 /// So parsing [T] and [T,U,V] and so on is possible. It'll collect the identifiers into a Vec<IdentifierNode*>,
 /// then expect a bracket close.
 
@@ -1087,8 +1105,8 @@ void GDScriptParser::parse_generic_parameters(Vector<IdentifierNode*>& p_generic
 	}
 
 	///must have at least one ident ahead for proper generic parameter capture.
-	if (!consume(GDScriptTokenizer::Token::IDENTIFIER,  
-		R"([Reginleif] Expected at least one generic parameter.)")){	
+	if (!consume(GDScriptTokenizer::Token::IDENTIFIER,
+		R"([Reginleif] Expected at least one generic parameter.)")){
 		return;
 	}
 
@@ -1099,7 +1117,7 @@ void GDScriptParser::parse_generic_parameters(Vector<IdentifierNode*>& p_generic
 	///grab other idents...
 	while (match(GDScriptTokenizer::Token::COMMA)) {
 
-		/// [Monarch] If the next token is a comma, collect the next identifier, 
+		/// [Monarch] If the next token is a comma, collect the next identifier,
 		/// then keep repeating until no more commas.
 
         if (!consume(GDScriptTokenizer::Token::IDENTIFIER,
@@ -1143,8 +1161,8 @@ GDScriptParser::ExpressionNode* GDScriptParser::parse_generic_call(ExpressionNod
         /// ::[T, U, ...]
         do {
 
-            if (check(GDScriptTokenizer::Token::BRACKET_CLOSE)) { 
-				break; 
+            if (check(GDScriptTokenizer::Token::BRACKET_CLOSE)) {
+				break;
 			}
 
             TypeNode* arg_type = parse_type(false);
@@ -1152,7 +1170,7 @@ GDScriptParser::ExpressionNode* GDScriptParser::parse_generic_call(ExpressionNod
                 push_error(R"([Reginleif] Expected type in generic argument list.)");
                 break;
             }
-			
+
             explicit_args.push_back(arg_type);
         } while (match(GDScriptTokenizer::Token::COMMA));
 
@@ -1245,7 +1263,7 @@ void GDScriptParser::parse_extends() {
 				break;
 			}
 			current_class->extends_generic_args.push_back(arg_type);
-		
+
 		} while (match(GDScriptTokenizer::Token::COMMA));
 
 		pop_multiline();
@@ -1636,7 +1654,7 @@ void GDScriptParser::parse_property_setter(VariableNode *p_variable) {
 
 			consume(GDScriptTokenizer::Token::PARENTHESIS_CLOSE, R"*(Expected ")" after parameter name.)*");
 			///
-			if (!check(GDScriptTokenizer::Token::BRACE_OPEN)) {
+			if (!brace_check()) {
 				consume(GDScriptTokenizer::Token::COLON, R"*([Reginleif] Expected ":" or "{" after ")".)*");
 			}
 
@@ -1675,10 +1693,10 @@ void GDScriptParser::parse_property_getter(VariableNode *p_variable) {
 			///
 			if (match(GDScriptTokenizer::Token::PARENTHESIS_OPEN)) {
 				consume(GDScriptTokenizer::Token::PARENTHESIS_CLOSE, R"*(Expected ")" after "get(".)*");
-				if (!check(GDScriptTokenizer::Token::BRACE_OPEN)) {
+				if (!brace_check()) {
 					consume(GDScriptTokenizer::Token::COLON, R"*([Reginleif] Expected ":" or "{" after "get()".)*");
 				}
-			} else if (!check(GDScriptTokenizer::Token::BRACE_OPEN)) {
+			} else if (!brace_check()) {
 				consume(GDScriptTokenizer::Token::COLON, R"([Reginleif] Expected ":" or "{" after "get".)");
 			}
 
@@ -2017,13 +2035,14 @@ bool GDScriptParser::parse_function_signature(FunctionNode *p_function, SuiteNod
 	// TODO: Improve token consumption so it synchronizes to a statement boundary. This way we can get into the function body with unrecognized tokens.
 	if (p_type == "lambda") {
 		///
-		if (check(GDScriptTokenizer::Token::BRACE_OPEN)) {
+		if (brace_check()) {
 			return true;
 		}
 		return consume(GDScriptTokenizer::Token::COLON, R"([Reginleif] Expected ":" or "{" after lambda declaration.)");
 	}
+
 	// The colon may not be present in the case of abstract functions.
-	if (check(GDScriptTokenizer::Token::BRACE_OPEN)) {
+	if (brace_check(true)) {
 		return true; ///Monarch: brace block coming, so no colon is needed, so this can just be true
 	}
 	return match(GDScriptTokenizer::Token::COLON);
@@ -2203,7 +2222,7 @@ GDScriptParser::SuiteNode *GDScriptParser::parse_suite(const String &p_context, 
 		suite->is_in_loop = true;
 	}
 
-	bool use_braces = check(GDScriptTokenizer::Token::BRACE_OPEN);
+	bool use_braces = brace_check();
 
 	if (use_braces) {
 
@@ -2238,10 +2257,10 @@ GDScriptParser::SuiteNode *GDScriptParser::parse_suite(const String &p_context, 
 
 			} /// [Monarch] this is required to gobble up anything that is scope-formatting related
 
-			if (check(GDScriptTokenizer::Token::BRACE_CLOSE)) { 
+			if (check(GDScriptTokenizer::Token::BRACE_CLOSE)) {
 				break;
 			}
-			
+
 			Node* statement = parse_statement();
 			if (statement == nullptr) {
 				if (error_count++ > 100) { push_error("[Reginleif] Too many errors! Breaking!", suite); break; }
@@ -2379,6 +2398,13 @@ GDScriptParser::SuiteNode *GDScriptParser::parse_suite(const String &p_context, 
 	}
 	current_suite = suite->parent_block;
 	return suite;
+}
+
+bool GDScriptParser::brace_check(bool should_advance) {
+	if (check(GDScriptTokenizer::Token::COLON)) {
+		return false;
+	}
+	return check(GDScriptTokenizer::Token::BRACE_OPEN) || allman_check(should_advance);
 }
 
 GDScriptParser::Node *GDScriptParser::parse_statement() {
@@ -2658,7 +2684,7 @@ GDScriptParser::ForNode *GDScriptParser::parse_for() {
 	if (match(GDScriptTokenizer::Token::COLON)) {
 		n_for->datatype_specifier = parse_type();
 		if (n_for->datatype_specifier == nullptr) {
-			if (!check(GDScriptTokenizer::Token::BRACE_OPEN)){
+			if (!brace_check(true)){
 				consume(GDScriptTokenizer::Token::COLON, vformat(R"([Reginleif] Expected ":" or "{" after "for")"));
 			}
 		}
@@ -2676,7 +2702,8 @@ GDScriptParser::ForNode *GDScriptParser::parse_for() {
 		push_error(R"(Expected iterable after "in".)");
 	}
 
-	if (!check(GDScriptTokenizer::Token::BRACE_OPEN) && !match(GDScriptTokenizer::Token::COLON)) {
+	if (!brace_check(true) && !match(GDScriptTokenizer::Token::COLON)
+	) {
 		push_error(vformat(R"([Reginleif] Expected ":" or "{" after "for" condition, found "%s" instead.)", current.get_name()), current);
 	}
 
@@ -2716,7 +2743,8 @@ GDScriptParser::IfNode *GDScriptParser::parse_if(const String &p_token) {
 	}
 
 	/// [Monarch] The evil entity that I am, we are adding BRACES AHAHAHAAA
-	if (!check(GDScriptTokenizer::Token::BRACE_OPEN) && !match(GDScriptTokenizer::Token::COLON)) {
+	/// [Bubba] I AM EVILER. MASTER OF ALL-MEN
+	if (!brace_check(true) && !match(GDScriptTokenizer::Token::COLON)) {
 		push_error(vformat(R"([Reginleif] Expected ":" or "{" after "%s" condition, found "%s" instead.)", p_token, current.get_name()), current);
 	}
 
@@ -2743,7 +2771,7 @@ GDScriptParser::IfNode *GDScriptParser::parse_if(const String &p_token) {
 		current_suite = previous_suite;
 	} else if (match(GDScriptTokenizer::Token::ELSE)) {
 		///
-		if (!check(GDScriptTokenizer::Token::BRACE_OPEN)){
+		if (!brace_check(true)){
 			consume(GDScriptTokenizer::Token::COLON, vformat(R"([Reginleif] Expected ":" or "{" after 'else'.)"));
 		}
 		n_if->false_block = parse_suite(R"("else" block)");
@@ -2768,7 +2796,7 @@ GDScriptParser::MatchNode *GDScriptParser::parse_match() {
 		push_error(R"(Expected expression to test after "match".)");
 	}
 
-	bool use_braces = check(GDScriptTokenizer::Token::BRACE_OPEN);
+	bool use_braces = brace_check(true);
 
 	if (use_braces) {
 		advance();
@@ -2790,10 +2818,10 @@ GDScriptParser::MatchNode *GDScriptParser::parse_match() {
 
 	while (!is_at_end()) {
 
-		bool block_closed = use_braces ? 
-							check(GDScriptTokenizer::Token::BRACE_CLOSE) : 
+		bool block_closed = use_braces ?
+							check(GDScriptTokenizer::Token::BRACE_CLOSE) :
 							check(GDScriptTokenizer::Token::DEDENT);
-		
+
 		if (block_closed) {
 			break;
 		}
@@ -2932,7 +2960,7 @@ GDScriptParser::MatchBranchNode *GDScriptParser::parse_match_branch() {
 	}
 
 	///
-	if (!check(GDScriptTokenizer::Token::BRACE_OPEN)){
+	if (!brace_check(true)){
 		if (!consume(GDScriptTokenizer::Token::COLON, vformat(R"([Reginleif] Expected ":" or "{"%s after "match" %s.)", has_guard ? "" : R"( or "when")", has_guard ? "pattern guard" : "patterns"))) {
 			branch->block = alloc_recovery_suite();
 			complete_extents(branch);
@@ -3117,7 +3145,7 @@ GDScriptParser::WhileNode *GDScriptParser::parse_while() {
 		push_error(R"(Expected conditional expression after "while".)");
 	}
 
-	if (!check(GDScriptTokenizer::Token::BRACE_OPEN) && !match(GDScriptTokenizer::Token::COLON)) {
+	if (!brace_check(true) && !match(GDScriptTokenizer::Token::COLON)) {
 		push_error(vformat(R"([Reginleif] Expected ":" or "{" after "while" condition, found "%s" instead.)", current.get_name()), current);
 	}
 
@@ -4116,7 +4144,7 @@ GDScriptParser::ExpressionNode *GDScriptParser::parse_lambda(ExpressionNode *p_p
 	current_suite = body;
 
 	const bool has_body = parse_function_signature(function, body, "lambda", -1);
-	const bool has_brace_body = has_body && check(GDScriptTokenizer::Token::BRACE_OPEN);
+	const bool has_brace_body = has_body && brace_check(false);
 
 	current_suite = previous_suite;
 
@@ -4384,10 +4412,10 @@ GDScriptParser::ImplNode* GDScriptParser::parse_impl() {
 			return nullptr;
 		}
 	}
-	///otherwise it must be `impl Trait` form, in-class, and thus impl_target_type stays null 
+	///otherwise it must be `impl Trait` form, in-class, and thus impl_target_type stays null
 	///(because it targets the type this is happening on itself)
 
-	bool use_braces = check(GDScriptTokenizer::Token::BRACE_OPEN);
+	bool use_braces = brace_check(true);
 	if (!use_braces) {
 		consume(GDScriptTokenizer::Token::COLON, R"([Reginleif] Expected ":" or "{" after impl declaration.)");
 	}
@@ -5224,7 +5252,7 @@ static bool _datatype_contains_generic_parameter(const GDScriptParser::DataType&
 
 
 static bool _resolve_generic_export_upper_bound(const GDScriptParser::DataType& p_type, const GDScriptParser::ClassNode* p_class, GDScriptParser::DataType& r_resolved) {
-	
+
 	if (p_type.kind != GDScriptParser::DataType::GENERIC_TYPE) {
 		r_resolved = p_type;
 		return true;
@@ -5243,7 +5271,7 @@ static bool _resolve_generic_export_upper_bound(const GDScriptParser::DataType& 
 			return false;
 		}
 		const GDScriptParser::DataType bound = param->generic_upper_bound->resolved_type;
-		if (!bound.is_set()) { ///unresolved upper bound 
+		if (!bound.is_set()) { ///unresolved upper bound
 			return false;
 		}
 		r_resolved = bound;
@@ -5528,7 +5556,7 @@ bool GDScriptParser::_export_annotations(AnnotationNode *p_annotation, Node *p_t
 
 			// Now parse value.
 			export_type = export_type.get_container_element_type(0);
-		
+
 		///
 		if (export_type.kind == DataType::GENERIC_TYPE) {
 			DataType resolved_generic_bound;
@@ -5540,7 +5568,7 @@ bool GDScriptParser::_export_annotations(AnnotationNode *p_annotation, Node *p_t
 			if (export_type.is_variant() || export_type.has_no_type()) {
 				export_type.kind = GDScriptParser::DataType::BUILTIN;
 			}
-			
+
 			switch (export_type.kind) {
 				case GDScriptParser::DataType::BUILTIN:
 					variable->export_info.type = export_type.builtin_type;
@@ -6039,13 +6067,13 @@ String GDScriptParser::DataType::to_string() const {
 				return vformat("Dictionary[%s, %s]", get_container_element_type_or_variant(0).to_string(), get_container_element_type_or_variant(1).to_string());
 			}
 			return Variant::get_type_name(builtin_type);
-		
+
 		case NATIVE:
 			if (is_meta_type) {
 				return GDScriptNativeClass::get_class_static();
 			}
 			return native_type.string();
-		
+
 		///
 		case CLASS: {
 			String base_name;

@@ -1,1 +1,4 @@
-GDTEST_OK
+GDTEST_ANALYZER_ERROR
+>> ERROR at line 22: The function signature doesn't match the parent. Parent signature is "untyped_to_variant() -> Variant".
+>> ERROR at line 23: The function signature doesn't match the parent. Parent signature is "untyped_to_int() -> Variant".
+>> ERROR at line 24: The function signature doesn't match the parent. Parent signature is "untyped_to_node() -> Variant".
