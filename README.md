@@ -202,14 +202,21 @@ func _ready() -> void {
 }
 ```
 
-However, funnily enough, **this is not supported**:
+And this is also supported!
 ```gdscript
 func _ready() -> void
 {
 	#your code
 }
 ```
-this is because the `NEWLINE` token forces the parser into an ambiguous position that is very hard to solve without somehow breaking abstract functions. so just use KnR braces if you intend to use this feature lol
+This is because I hacked in the NEWLINE character using caveman-esque if statements. It's funky looking and can cause harmless errors, but it works.
+The only real problem is that you are forced to use empty braces when defining abstract methods, as the parser has trouble parsing them. (Due to my hacky fix.)
+```gdscript
+@abstract func abstract_method() -> void # Error.
+@abstract func abstract_method() -> void {} # Will not error.
+```
+
+This fork is mainly just for me so I'm not very bothered by this, but I'll look into fixing it. Or someone smarter than I could fix it. But wateva. :)
 
 oh, yeah! you can skip the `pass` keyword when using braces for empty blocks. this is completely legal:
 ```gdscript
