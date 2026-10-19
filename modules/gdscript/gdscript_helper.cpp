@@ -30,9 +30,30 @@
 
 #include "gdscript_helper.h"
 
+#include "core/variant/container_type_validate.h"
 #include "core/variant/variant.h"
 
 namespace GDScriptHelper {
+
+static ContainerTypeValidate _to_container_type_validate(const GDScriptDataType &p_type) {
+	ContainerTypeValidate ct;
+	ct.variant_type = p_type.builtin_type;
+	ct.class_name = p_type.native_type;
+	ct.script = p_type.script_type;
+
+	if (p_type.kind != GDScriptDataType::BUILTIN || !p_type.has_container_element_types()) {
+		return ct;
+	}
+
+	int nested_count = p_type.container_element_types.size();
+	ct.nested_types.resize(nested_count);
+	ContainerTypeValidate *nested_ptr = ct.nested_types.ptrw();
+	for (int i = 0; i < nested_count; i++) {
+		nested_ptr[i] = _to_container_type_validate(p_type.container_element_types[i]);
+	}
+
+	return ct;
+}
 
 Variant construct_empty_value_for_data_type(const GDScriptDataType &p_data_type) {
 	if (p_data_type.kind == GDScriptDataType::BUILTIN) {
@@ -41,7 +62,11 @@ Variant construct_empty_value_for_data_type(const GDScriptDataType &p_data_type)
 			// Typed array.
 			if (p_data_type.has_container_element_type(0)) {
 				const GDScriptDataType &element_type = p_data_type.get_container_element_type(0);
-				array.set_typed(element_type.builtin_type, element_type.native_type, element_type.script_type);
+				if (element_type.has_container_element_types()) {
+					array.set_typed_nested(_to_container_type_validate(element_type));
+				} else {
+					array.set_typed(element_type.builtin_type, element_type.native_type, element_type.script_type);
+				}
 			}
 
 			return array;
@@ -51,7 +76,11 @@ Variant construct_empty_value_for_data_type(const GDScriptDataType &p_data_type)
 			if (p_data_type.has_container_element_types()) {
 				const GDScriptDataType &key_type = p_data_type.get_container_element_type_or_variant(0);
 				const GDScriptDataType &value_type = p_data_type.get_container_element_type_or_variant(1);
-				dict.set_typed(key_type.builtin_type, key_type.native_type, key_type.script_type, value_type.builtin_type, value_type.native_type, value_type.script_type);
+				if (key_type.has_container_element_types() || value_type.has_container_element_types()) {
+					dict.set_typed_nested(_to_container_type_validate(key_type), _to_container_type_validate(value_type));
+				} else {
+					dict.set_typed(key_type.builtin_type, key_type.native_type, key_type.script_type, value_type.builtin_type, value_type.native_type, value_type.script_type);
+				}
 			}
 
 			return dict;
