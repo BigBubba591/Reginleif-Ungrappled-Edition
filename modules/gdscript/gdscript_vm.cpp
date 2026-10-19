@@ -31,6 +31,7 @@
 #include "gdscript.h"
 #include "gdscript_cache.h"
 #include "gdscript_function.h"
+#include "gdscript_helper.h"
 #include "gdscript_impl_callable.h"
 #include "gdscript_lambda_callable.h"
 
@@ -173,26 +174,6 @@ void GDScriptFunction::_profile_native_call(uint64_t p_t_taken, const String &p_
 
 #endif // DEBUG_ENABLED
 
-static ContainerTypeValidate _to_container_type_validate(const GDScriptDataType& p_type) {
-	ContainerTypeValidate ct;
-	ct.variant_type = p_type.builtin_type;
-	ct.class_name = p_type.native_type;
-	ct.script = p_type.script_type;
-
-	if (p_type.kind != GDScriptDataType::BUILTIN || !p_type.has_container_element_types()) {
-		return ct;
-	}
-
-	int nested_count = p_type.container_element_types.size();
-	ct.nested_types.resize(nested_count);
-	ContainerTypeValidate* nested_ptr = ct.nested_types.ptrw();
-	for (int i = 0; i < nested_count; i++) {
-		nested_ptr[i] = _to_container_type_validate(p_type.container_element_types[i]);
-	}
-
-	return ct;
-}
-
 static bool _decode_nested_array_type(const Variant& p_variant, ContainerTypeValidate& r_type) {
 	if (p_variant.get_type() != Variant::DICTIONARY) {
 		return false;
@@ -223,49 +204,6 @@ static bool _decode_nested_dictionary_type(const Variant& p_variant, ContainerTy
 	return descriptor.has("key_type") && descriptor.has("value_type") &&
 			_decode_nested_array_type(descriptor["key_type"], r_key_type) &&
 			_decode_nested_array_type(descriptor["value_type"], r_value_type);
-}
-
-Variant GDScriptFunction::_get_default_variant_for_data_type(const GDScriptDataType &p_data_type) {
-	if (p_data_type.kind == GDScriptDataType::BUILTIN) {
-		if (p_data_type.builtin_type == Variant::ARRAY) {
-			Array array;
-			// Typed array.
-			if (p_data_type.has_container_element_type(0)) {
-				const GDScriptDataType &element_type = p_data_type.get_container_element_type(0);
-				if (element_type.has_container_element_types()) {
-					array.set_typed_nested(_to_container_type_validate(element_type));
-				} else {
-					array.set_typed(element_type.builtin_type, element_type.native_type, element_type.script_type);
-				}
-			}
-
-			return array;
-		} else if (p_data_type.builtin_type == Variant::DICTIONARY) {
-			Dictionary dict;
-			// Typed dictionary.
-			if (p_data_type.has_container_element_types()) {
-				const GDScriptDataType &key_type = p_data_type.get_container_element_type_or_variant(0);
-				const GDScriptDataType &value_type = p_data_type.get_container_element_type_or_variant(1);
-				if (key_type.has_container_element_types() || value_type.has_container_element_types()) {
-					dict.set_typed_nested(_to_container_type_validate(key_type), _to_container_type_validate(value_type));
-				} else {
-					dict.set_typed(key_type.builtin_type, key_type.native_type, key_type.script_type, value_type.builtin_type, value_type.native_type, value_type.script_type);
-				}
-			}
-
-			return dict;
-		} else {
-			Callable::CallError ce;
-			Variant variant;
-			Variant::construct(p_data_type.builtin_type, variant, nullptr, 0, ce);
-
-			ERR_FAIL_COND_V(ce.error != Callable::CallError::CALL_OK, Variant());
-
-			return variant;
-		}
-	}
-
-	return Variant();
 }
 
 #ifdef DEBUG_ENABLED
@@ -667,7 +605,7 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 	OPCODES_TABLE;
 
 	if (!_code_ptr) {
-		return _get_default_variant_for_data_type(return_type);
+		return GDScriptHelper::construct_empty_value_for_data_type(return_type);
 	}
 
 	r_err.error = Callable::CallError::CALL_OK;
@@ -681,7 +619,7 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 #ifdef DEBUG_ENABLED
 		ERR_PRINT(vformat("Reginleif bug (please report!): native-impl method '%s' called with a non-null GDScriptInstance*. This function expects self as an implicit leading argument, not an instance.", name));
 #endif
-		return _get_default_variant_for_data_type(return_type);
+		return GDScriptHelper::construct_empty_value_for_data_type(return_type);
 	}
 
 	static thread_local int call_depth = 0;
@@ -701,7 +639,7 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 		_err_print_error(err_func.utf8().get_data(), err_file.utf8().get_data(), err_line, err_text, false, ERR_HANDLER_SCRIPT);
 		GDScriptLanguage::get_singleton()->debug_break(err_text, false);
 #endif
-		return _get_default_variant_for_data_type(return_type);
+		return GDScriptHelper::construct_empty_value_for_data_type(return_type);
 	}
 
 	Variant retvalue;
@@ -737,13 +675,13 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 					r_err.error = Callable::CallError::CALL_ERROR_TOO_MANY_ARGUMENTS;
 					r_err.expected = _argument_count;
 					call_depth--;
-					return _get_default_variant_for_data_type(return_type);
+					return GDScriptHelper::construct_empty_value_for_data_type(return_type);
 				}
 			} else if (p_argcount < _argument_count - _default_arg_count) {
 				r_err.error = Callable::CallError::CALL_ERROR_TOO_FEW_ARGUMENTS;
 				r_err.expected = _argument_count - _default_arg_count;
 				call_depth--;
-				return _get_default_variant_for_data_type(return_type);
+				return GDScriptHelper::construct_empty_value_for_data_type(return_type);
 			} else {
 				defarg = _argument_count - p_argcount;
 			}
@@ -771,7 +709,7 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 				r_err.argument = i;
 				r_err.expected = argument_types[i].builtin_type;
 				call_depth--;
-				return _get_default_variant_for_data_type(return_type);
+				return GDScriptHelper::construct_empty_value_for_data_type(return_type);
 			}
 			if (argument_types[i].kind == GDScriptDataType::BUILTIN) {
 				if (argument_types[i].builtin_type == Variant::DICTIONARY && argument_types[i].has_container_element_types()) {
@@ -791,7 +729,7 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 						r_err.argument = i;
 						r_err.expected = argument_types[i].builtin_type;
 						call_depth--;
-						return _get_default_variant_for_data_type(return_type);
+						return GDScriptHelper::construct_empty_value_for_data_type(return_type);
 					}
 					memnew_placement(&stack[i + FIXED_ADDRESSES_MAX], Variant(variant));
 				}
@@ -4894,7 +4832,7 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 			const int address_type = (inline_call.result_address & ADDR_TYPE_MASK) >> ADDR_BITS;
 			const int address_index = inline_call.result_address & ADDR_MASK;
 			if (inline_call.result_address != ADDR_NIL) {
-				variant_addresses[address_type][address_index] = _get_default_variant_for_data_type(inline_call.return_type);
+				variant_addresses[address_type][address_index] = GDScriptHelper::construct_empty_value_for_data_type(inline_call.return_type);
 			}
 			ip = inline_call.end;
 			line = inline_call.call_line;
@@ -4904,7 +4842,7 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 		}
 
 		// Get a default return type in case of failure
-		retvalue = _get_default_variant_for_data_type(return_type);
+		retvalue = GDScriptHelper::construct_empty_value_for_data_type(return_type);
 #endif
 
 		OPCODE_OUT;
