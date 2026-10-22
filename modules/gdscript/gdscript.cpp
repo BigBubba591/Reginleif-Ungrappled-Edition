@@ -34,6 +34,7 @@
 #include "gdscript_cache.h"
 #include "gdscript_compiler.h"
 #include "gdscript_helper.h"
+#include "program_index.h"
 #include "gdscript_linter.h"
 #include "gdscript_parser.h"
 #include "gdscript_tokenizer_buffer.h"
@@ -754,6 +755,10 @@ void GDScript::_restore_old_static_data() {
 #endif
 
 Error GDScript::reload(bool p_keep_state) {
+	if (RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton()) {
+		index_service->ensure_populated();
+	}
+
 	if (reloading) {
 		return OK;
 	}
@@ -2186,6 +2191,10 @@ void GDScriptLanguage::remove_named_global_constant(const StringName &p_name) {
 }
 
 void GDScriptLanguage::init() {
+	if (RGIndex::ProgramIndexService::get_singleton() == nullptr) {
+		memnew(RGIndex::ProgramIndexService);
+	}
+
 	// Populate core constants.
 	int gcc = CoreConstants::get_global_constant_count();
 	for (int i = 0; i < gcc; i++) {
@@ -2278,6 +2287,10 @@ void GDScriptLanguage::finish() {
 	// Clear the cache before parsing the `script_list`. Some `GDScript` instances will drop to a ref count of zero and destruct on their own.
 	// TODO: This might lead to issues when trying to load a script from within `NOTIFICATION_PREDELETE`, we ignore this issue for now.
 	GDScriptCache::clear();
+
+	if (RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton()) {
+		memdelete(index_service);
+	}
 
 	// All remaining scripts in `script_list` are still referenced. There can be two reasons for this:
 	// 1. They have a cyclic dependency among them-selves.
@@ -2888,6 +2901,15 @@ String GDScriptLanguage::_get_global_class_name(const String &p_path, String *r_
 
 	String source = f->get_as_utf8_string();
 
+#ifdef TOOLS_ENABLED
+	if (RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton()) {
+		Ref<RGIndex::FileSummary> summary = RGIndex::FileSummary::build_from_source(p_path, source);
+		if (summary.is_valid()) {
+			index_service->stage_file(summary);
+		}
+	}
+#endif
+
 	GDScriptParser parser;
 	err = parser.parse(source, p_path, false, false);
 
@@ -3096,6 +3118,7 @@ GDScriptFunction* GDScriptLanguage::get_enum_impl_method(const StringName& p_enu
 void GDScriptLanguage::register_native_class_impl_method(const StringName& p_native_class, const StringName& p_method_name, GDScriptFunction* p_function) {
 	MutexLock lock(mutex);
 	native_class_impl_methods[p_native_class][p_method_name] = p_function;
+	native_class_impl_method_cache.clear();
 }
 
 void GDScriptLanguage::unregister_native_class_impl_methods_for_function(GDScriptFunction* p_function) {
