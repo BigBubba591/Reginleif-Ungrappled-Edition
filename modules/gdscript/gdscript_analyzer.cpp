@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "gdscript_analyzer.h"
+#include "program_index_gd.h"
 
 #include "gdscript.h"
 #include "gdscript_cache.h"
@@ -302,124 +303,34 @@ static GDScriptParser::DataType make_builtin_meta_type(Variant::Type p_type) {
 	return type;
 }
 
-static StringName impl_target_key_from_datatype(const GDScriptParser::DataType& p_type) {
-	if (p_type.kind == GDScriptParser::DataType::BUILTIN) {
-		return StringName("builtin::" + itos((int)p_type.builtin_type));
-	}
-	if (p_type.kind == GDScriptParser::DataType::NATIVE) {
-		return StringName("native::" + String(p_type.native_type));
-	}
-	if (p_type.kind == GDScriptParser::DataType::CLASS && p_type.class_type != nullptr) {
-		return StringName("class::" + p_type.class_type->fqcn);
-	}
-	if (p_type.kind == GDScriptParser::DataType::ENUM) {
-		return StringName("enum::" + String(p_type.native_type));
-	}
-	return StringName();
-}
 
 static bool global_impl_claims_satisfy_trait_for_type(const GDScriptParser::DataType& p_type, const StringName& p_trait_name) {
-	GDScriptCache::ensure_global_impls_scanned();
-
-	GDScriptParser::DataType walk_type = p_type;
-	while (true) {
-		StringName walk_key = impl_target_key_from_datatype(walk_type);
-		if (walk_key != StringName()) {
-			Vector<GDScriptCache::GlobalImplClaim> claims = GDScriptCache::get_global_impl_claims(walk_key);
-			for (const GDScriptCache::GlobalImplClaim& claim : claims) {
-				if (claim.trait_name == p_trait_name) {
-					return true;
-				}
-			}
-		}
-
-		if (walk_type.kind == GDScriptParser::DataType::CLASS && walk_type.class_type != nullptr) {
-			GDScriptParser::DataType next_walk = walk_type.class_type->base_type;
-			if (next_walk.kind == GDScriptParser::DataType::UNRESOLVED) {
-				break;
-			}
-			walk_type = next_walk;
-			continue;
-		}
-
-		if (walk_type.kind == GDScriptParser::DataType::NATIVE && walk_type.native_type != StringName()) {
-			StringName parent_native = ClassDB::get_parent_class(walk_type.native_type);
-			if (parent_native == StringName()) {
-				break;
-			}
-			GDScriptParser::DataType native_walk;
-			native_walk.kind = GDScriptParser::DataType::NATIVE;
-			native_walk.builtin_type = Variant::OBJECT;
-			native_walk.native_type = parent_native;
-			walk_type = native_walk;
-			continue;
-		}
-
-		break;
+	RGIndex::ProgramIndexService* svc = RGIndex::ProgramIndexService::get_singleton();
+	const RGIndex::TypeKey key = RGIndex::type_key_from_datatype(p_type);
+	if (svc != nullptr && svc->is_populated() && key.is_valid()) {
+		RGIndex::IndexView view(svc->get_snapshot(), nullptr);
+		return view.implements(key, p_trait_name);
 	}
-
-	return false;
-}
-
-///a CLASS-kind base (a user script) can match a global impl claim two different ways...
-///case 1, an impl targeting the script class itself (`impl for Bumfuck`), or an impl targeting one
-///of its native ancestors (`impl for Node`, reachable since Bumfuck extends Node2D extends
-/// ... extends Node). yippee. impl_target_key_from_datatype() only ever produces one or the other
-///key, so this checks every key a CLASS type could plausibly match against
-static bool get_global_impl_method_claim_for_key(const StringName& p_target_type_key, const StringName& p_method_name, GDScriptCache::GlobalImplClaim* r_claim = nullptr) {
-	if (p_target_type_key == StringName()) {
-		return false;
-	}
-	Vector<GDScriptCache::GlobalImplClaim> claims = GDScriptCache::get_global_impl_claims(p_target_type_key);
-	for (const GDScriptCache::GlobalImplClaim& claim : claims) {
-		if (claim.method_name == p_method_name) {
-			if (r_claim != nullptr) {
-				*r_claim = claim;
-			}
-			return true;
-		}
-	}
-	return false;
-}
-
-static bool get_global_impl_method_claim_for_native_chain(StringName p_native_type, const StringName& p_method_name, GDScriptCache::GlobalImplClaim* r_claim = nullptr) {
-	while (p_native_type != StringName()) {
-		StringName native_key = StringName("native::" + String(p_native_type));
-		if (get_global_impl_method_claim_for_key(native_key, p_method_name, r_claim)) {
-			return true;
-		}
-		p_native_type = ClassDB::get_parent_class(p_native_type);
-	}
-	return false;
+	return false; ///no index or no key
 }
 
 static bool get_global_impl_method_claim_for_type(const GDScriptParser::DataType& p_type, const StringName& p_method_name, GDScriptCache::GlobalImplClaim* r_claim = nullptr) {
-	GDScriptCache::ensure_global_impls_scanned();
-	StringName direct_key = impl_target_key_from_datatype(p_type);
-	if (get_global_impl_method_claim_for_key(direct_key, p_method_name, r_claim)) {
+	RGIndex::ProgramIndexService* svc = RGIndex::ProgramIndexService::get_singleton();
+	const RGIndex::TypeKey key = RGIndex::type_key_from_datatype(p_type);
+	if (svc != nullptr && svc->is_populated() && key.is_valid()) {
+		RGIndex::IndexView view(svc->get_snapshot(), nullptr);
+		const RGIndex::ImplHit hit = view.find_impl_method(key, p_method_name);
+		if (!hit.found) {
+			return false;
+		}
+		if (r_claim != nullptr) {
+			r_claim->trait_name = hit.trait_name;
+			r_claim->method_name = p_method_name;
+			r_claim->owning_path = hit.owning_path;
+			r_claim->signature = Ref<GDScriptTraitSignatureSnapshot>();
+		}
 		return true;
 	}
-
-	if (p_type.kind == GDScriptParser::DataType::NATIVE) {
-		return get_global_impl_method_claim_for_native_chain(ClassDB::get_parent_class(p_type.native_type), p_method_name, r_claim);
-	}
-
-	if (p_type.kind == GDScriptParser::DataType::CLASS) {
-		GDScriptParser::ClassNode* current = p_type.class_type;
-		while (current != nullptr && current->base_type.kind == GDScriptParser::DataType::CLASS) {
-			current = current->base_type.class_type;
-			if (current != nullptr) {
-				StringName script_key = StringName("class::" + current->fqcn);
-				if (get_global_impl_method_claim_for_key(script_key, p_method_name, r_claim)) {
-					return true;
-				}
-			}
-		}
-		if (current != nullptr && current->base_type.kind == GDScriptParser::DataType::NATIVE) {
-			return get_global_impl_method_claim_for_native_chain(current->base_type.native_type, p_method_name, r_claim);
-		}
-	}
-
 	return false;
 }
 
@@ -5787,6 +5698,13 @@ Ref<GDScriptParserRef> GDScriptAnalyzer::ensure_cached_external_parser_for_class
 			if (parser_ref.is_valid()) {
 				break;
 			}
+		}
+	}
+
+	if (parser_ref.is_null() && !p_class->self_type.script_path.is_empty()) {
+		Ref<GDScriptParserRef> by_path = parser->get_depended_parser_for(p_class->self_type.script_path);
+		if (by_path.is_valid() && by_path->raise_status(GDScriptParserRef::PARSED) == OK && by_path->get_parser()->has_class(p_class)) {
+			parser_ref = by_path;
 		}
 	}
 

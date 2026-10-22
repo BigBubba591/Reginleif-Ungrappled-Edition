@@ -75,10 +75,25 @@ private:
 	bool clearing = false;
 	bool abandoned = false;
 
+	int pin_count = 0;
+	bool clear_pending = false;
+
 	friend class GDScriptCache;
 	friend class GDScript;
 
 public:
+	void pin() { pin_count++; }
+	void unpin() {
+		pin_count--;
+		if (pin_count <= 0) {
+			pin_count = 0;
+			if (clear_pending) {
+				clear_pending = false;
+				clear();
+			}
+		}
+	}
+
 	Status get_status() const;
 	String get_path() const;
 	uint32_t get_source_hash() const;
@@ -92,6 +107,27 @@ public:
 
 	GDScriptParserRef() {}
 	~GDScriptParserRef();
+};
+
+///just a temporary construct until the datatype to typekey resolver is done
+///no worries
+class GDScriptParserPin : public RefCounted {
+	GDSOFTCLASS(GDScriptParserPin, RefCounted);
+
+	Ref<GDScriptParserRef> ref;
+
+public:
+	explicit GDScriptParserPin(const Ref<GDScriptParserRef>& p_ref) :
+			ref(p_ref) {
+		if (ref.is_valid()) {
+			ref->pin();
+		}
+	}
+	~GDScriptParserPin() {
+		if (ref.is_valid()) {
+			ref->unpin();
+		}
+	}
 };
 
 namespace GDScriptTests {
@@ -126,12 +162,9 @@ private:
 
 	///trait stuff
 	HashMap<StringName, String> global_traits;
-	bool global_traits_project_scanned = false;
 
 	///impl stuff, for cross-file collision detection
-	HashMap<StringName, Vector<GlobalImplClaim>> global_impls; ///target_type_key -> claims on that type
-	SafeFlag global_impls_project_scanned;
-	bool global_impls_project_scanning = false;
+	HashMap<StringName, Vector<GlobalImplClaim>> global_impls;
 
 	friend class GDScript;
 	friend class GDScriptParserRef;
@@ -183,8 +216,10 @@ public:
 	static void add_global_impl_claims(const StringName& p_target_type_key, const StringName& p_trait_name, const HashMap<StringName, Ref<GDScriptTraitSignatureSnapshot>>& p_method_signatures, const String& p_path);
 	static void remove_global_impls_by_path(const String& p_path);
 	static Vector<GlobalImplClaim> get_global_impl_claims(const StringName& p_target_type_key);
-	static bool has_global_impl_method_claim(const StringName& p_target_type_key, const StringName& p_method_name);
-	static void ensure_global_impls_scanned();
+
+	static void ensure_impl_providers_loaded_for_native_class(const StringName& p_class);
+	static void ensure_impl_providers_loaded_for_builtin(Variant::Type p_type);
+	static void ensure_impl_providers_loaded_for_enums();
 
 	static void clear();
 

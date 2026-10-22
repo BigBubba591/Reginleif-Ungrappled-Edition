@@ -35,11 +35,13 @@
 #include "gdscript_compiler.h"
 #include "gdscript_parser.h"
 #include "gdscript_trait.h"
+#include "program_index.h"
 
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/resource_loader.h"
 #include "core/config/project_settings.h"
+#include "core/object/class_db.h"
 #include "core/templates/rb_set.h"
 #include "core/templates/vector.h"
 
@@ -85,6 +87,10 @@ Error GDScriptParserRef::raise_status(Status p_new_status) {
 	while (result == OK && p_new_status > status) {
 		switch (status) {
 			case EMPTY: {
+				if (trait_status != TRAIT_EMPTY) {
+					status = PARSED;
+					break;
+				}
 				// Calling parse will clear the parser, which can destruct another GDScriptParserRef which can clear the last reference to the script with this path, calling remove_script, which clears this GDScriptParserRef.
 				// It's ok if its the first thing done here.
 				get_parser()->clear();
@@ -154,6 +160,10 @@ Error GDScriptParserRef::raise_trait_status(TraitStatus p_new_status) {
 
 void GDScriptParserRef::clear() {
 	if (clearing) {
+		return;
+	}
+	if (pin_count > 0) {
+		clear_pending = true;
 		return;
 	}
 	clearing = true;
@@ -355,48 +365,6 @@ void GDScriptCache::ensure_subclass_graph_project_scanned() {
 	singleton->subclass_graph_project_scanning = false;
 }
 
-static void _scan_trait_scripts_in_dir(const String& p_dir, Vector<String>* r_impl_paths = nullptr) {
-	Error err = OK;
-	Ref<DirAccess> dir = DirAccess::open(p_dir, &err);
-	if (err != OK || dir.is_null()) {
-		return;
-	}
-
-	if (dir->file_exists(".gdignore")) {
-		return;
-	}
-
-	dir->list_dir_begin();
-	String file_name = dir->get_next();
-	while (!file_name.is_empty()) {
-		if (dir->current_is_dir()) {
-			if (file_name != "." && file_name != ".." && file_name != "./") {
-				_scan_trait_scripts_in_dir(p_dir.path_join(file_name), r_impl_paths);
-			}
-		} else if (file_name.ends_with(".gd")) {
-			String script_path = p_dir.path_join(file_name);
-			Ref<FileAccess> f = FileAccess::open(script_path, FileAccess::READ, &err);
-			if (err == OK && f.is_valid()) {
-				GDScriptParser parser;
-				err = parser.parse(f->get_as_utf8_string(), script_path, false, false);
-				if (err == OK && parser.is_trait_script()) {
-					const GDScriptParser::TraitNode* trait = parser.get_trait_tree();
-					if (trait != nullptr && trait->identifier != nullptr) {
-						GDScriptCache::add_global_trait(trait->identifier->name, script_path);
-					}
-				} else if (err == OK && r_impl_paths != nullptr) {
-					const GDScriptParser::ClassNode* cls = parser.get_tree();
-					if (cls != nullptr && !cls->impls.is_empty()) {
-						r_impl_paths->push_back(script_path);
-					}
-				}
-			} else {
-			}
-		}
-		file_name = dir->get_next();
-	}
-}
-
 void GDScriptCache::add_global_trait(const StringName& p_trait_name, const String& p_path) {
 	MutexLock lock(singleton->mutex);
 	singleton->global_traits[p_trait_name] = p_path;
@@ -405,7 +373,6 @@ void GDScriptCache::add_global_trait(const StringName& p_trait_name, const Strin
 void GDScriptCache::remove_global_trait(const StringName& p_trait_name) {
 	MutexLock lock(singleton->mutex);
 	singleton->global_traits.erase(p_trait_name);
-	singleton->global_traits_project_scanned = false;
 }
 
 void GDScriptCache::remove_global_trait_by_path(const String& p_path) {
@@ -415,7 +382,6 @@ void GDScriptCache::remove_global_trait_by_path(const String& p_path) {
 		++next;
 		if (E->value == p_path) {
 			singleton->global_traits.remove(E);
-			singleton->global_traits_project_scanned = false;
 		}
 		E = next;
 	}
@@ -434,26 +400,14 @@ void GDScriptCache::get_global_trait_list(List<StringName>* r_traits) {
 }
 
 String GDScriptCache::get_global_trait_path(const StringName& p_trait_name) {
-	{
-		MutexLock lock(singleton->mutex);
-		const String* path = singleton->global_traits.getptr(p_trait_name);
-		if (path != nullptr) {
-			return *path;
-		}
-
-		if (singleton->global_traits_project_scanned) {
-			return String();
-		}
+	if (RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton()) {
+		index_service->ensure_populated();
+		Ref<RGIndex::ProgramIndex> snapshot = index_service->get_snapshot();
+		const RGIndex::ProgramIndex::TraitEntry* entry = snapshot->get_trait(p_trait_name);
+		return entry != nullptr ? entry->path : String();
 	}
 
-	///the fs normally populates this registry while the editor scans project
-	///files, but runtime parsing can hit this lookup before that has happened in this
-	///process. absolute cinema. do one lazy project scan on the first cache miss, 
-	///then subsequent misses stay O(1) instead of repeatedly walking the whole project
-	_scan_trait_scripts_in_dir("res://");
-
 	MutexLock lock(singleton->mutex);
-	singleton->global_traits_project_scanned = true;
 	const String* path = singleton->global_traits.getptr(p_trait_name);
 	return path != nullptr ? *path : String();
 }
@@ -499,71 +453,86 @@ Vector<GDScriptCache::GlobalImplClaim> GDScriptCache::get_global_impl_claims(con
 	return claims != nullptr ? *claims : Vector<GlobalImplClaim>();
 }
 
-bool GDScriptCache::has_global_impl_method_claim(const StringName& p_target_type_key, const StringName& p_method_name) {
-	{
-		MutexLock lock(singleton->mutex);
-		const Vector<GlobalImplClaim>* claims = singleton->global_impls.getptr(p_target_type_key);
-		if (claims != nullptr) {
-			for (const GlobalImplClaim& claim : *claims) {
-				if (claim.method_name == p_method_name) {
-					return true;
-				}
-			}
-		}
-	}
-
-	ensure_global_impls_scanned();
-
-	MutexLock lock(singleton->mutex);
-	const Vector<GlobalImplClaim>* claims = singleton->global_impls.getptr(p_target_type_key);
-	if (claims == nullptr) {
-		return false;
-	}
-	for (const GlobalImplClaim& claim : *claims) {
-		if (claim.method_name == p_method_name) {
-			return true;
-		}
-	}
-	return false;
-}
-
-void GDScriptCache::ensure_global_impls_scanned() {
-	if (singleton->global_impls_project_scanned.is_set()) {
+static void _ensure_impl_providers_loaded_impl(int p_mode, const StringName& p_class, Variant::Type p_type) {
+	RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton();
+	if (index_service == nullptr) {
 		return;
 	}
 
+	index_service->ensure_populated();
+	Ref<RGIndex::ProgramIndex> snapshot = index_service->get_snapshot();
+	if (snapshot.is_null()) {
+		return;
+	}
+
+	HashSet<StringName> native_chain;
+	if (p_mode == 0) {
+		for (StringName c = p_class; c != StringName(); c = ClassDB::get_parent_class(c)) {
+			native_chain.insert(c);
+		}
+	}
+
+	Vector<String> paths;
+	HashSet<String> seen;
+	for (const KeyValue<RGIndex::TypeKey, Vector<RGIndex::ProgramIndex::ImplEntry>>& T : snapshot->get_impls()) {
+		const RGIndex::TypeKey& key = T.key;
+
+		///how it feels to be too lazy to make an enum lowk
+		const bool matches =
+				(p_mode == 0 && key.kind == RGIndex::TypeKey::NATIVE && native_chain.has(key.name)) ||
+				(p_mode == 1 && key.kind == RGIndex::TypeKey::BUILTIN && key.id == (uint32_t)p_type) ||
+				(p_mode == 2 && key.kind == RGIndex::TypeKey::ENUM);
+		
+		if (!matches) {
+			continue;
+		}
+		for (const RGIndex::ProgramIndex::ImplEntry& entry : T.value) {
+			if (!seen.has(entry.owning_path)) {
+				seen.insert(entry.owning_path);
+				paths.push_back(entry.owning_path);
+			}
+		}
+	}
+	paths.sort();
+
+	for (const String& path : paths) {
+		if (GDScriptCache::get_cached_script(path).is_valid()) {
+			continue; ///do NOT fucking reload
+		}
+		Error err = OK;
+		Ref<GDScript> script = GDScriptCache::get_full_script(path, err, String(), /*p_update_from_disk=*/true);
+	}
+}
+
+static void _ensure_impl_providers_loaded(int p_mode, const StringName& p_class, Variant::Type p_type) {
+	static Mutex ensured_mutex;
+	static HashSet<String> ensured;
+	const String memo = vformat("%d:%s:%d", p_mode, String(p_class), (int)p_type);
 	{
-		MutexLock lock(singleton->mutex);
-		if (singleton->global_impls_project_scanned.is_set() || singleton->global_impls_project_scanning) {
+		MutexLock lock(ensured_mutex);
+		if (ensured.has(memo)) {
 			return;
 		}
-		singleton->global_impls_project_scanning = true;
 	}
-
-	Vector<String> impl_only_paths;
-	_scan_trait_scripts_in_dir("res://", &impl_only_paths);
-
-	Vector<String> trait_paths;
-	{
-		MutexLock lock(singleton->mutex);
-		for (const KeyValue<StringName, String>& E : singleton->global_traits) {
-			trait_paths.push_back(E.value);
+	_ensure_impl_providers_loaded_impl(p_mode, p_class, p_type);
+	if (RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton()) {
+		if (index_service->is_populated()) {
+			MutexLock lock(ensured_mutex);
+			ensured.insert(memo);
 		}
 	}
+}
 
-	for (const String& path : trait_paths) {
-		Error err = OK;
-		Ref<GDScript> script = get_full_script(path, err, String(), /*p_update_from_disk=*/true);
-	}
+void GDScriptCache::ensure_impl_providers_loaded_for_native_class(const StringName& p_class) {
+	_ensure_impl_providers_loaded(0, p_class, Variant::NIL);
+}
 
-	for (const String& path : impl_only_paths) {
-		Error err = OK;
-		Ref<GDScript> script = get_full_script(path, err, String(), /*p_update_from_disk=*/true);
-	}
+void GDScriptCache::ensure_impl_providers_loaded_for_builtin(Variant::Type p_type) {
+	_ensure_impl_providers_loaded(1, StringName(), p_type);
+}
 
-	MutexLock lock(singleton->mutex);
-	singleton->global_impls_project_scanned.set();
-	singleton->global_impls_project_scanning = false;
+void GDScriptCache::ensure_impl_providers_loaded_for_enums() {
+	_ensure_impl_providers_loaded(2, StringName(), Variant::NIL);
 }
 
 Ref<GDScriptParserRef> GDScriptCache::get_parser(const String &p_path, GDScriptParserRef::Status p_status, Error &r_error, const String &p_owner) {
@@ -1078,10 +1047,7 @@ void GDScriptCache::clear() {
 	singleton->full_gdscript_cache.clear();
 	singleton->static_gdscript_cache.clear();
 	singleton->global_traits.clear();
-	singleton->global_traits_project_scanned = false;
 	singleton->global_impls.clear();
-	singleton->global_impls_project_scanned.clear();
-	singleton->global_impls_project_scanning = false;
 	singleton->direct_subclasses_by_fqcn.clear();
 	singleton->fqcn_owning_path.clear();
 	singleton->inline_assumption_dependents.clear();
