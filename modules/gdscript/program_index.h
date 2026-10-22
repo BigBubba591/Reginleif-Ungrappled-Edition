@@ -297,6 +297,7 @@ public:
 	uint64_t get_epoch() const { return epoch; }
 	bool has_file(const String &p_path) const { return files.has(p_path); }
 	int get_unresolved_impl_target_count() const { return unresolved_impl_targets; }
+	const HashMap<TypeKey, Vector<ImplEntry>, TypeKeyHasher>& get_impls() const { return impls; }
 
 	///raw lookups from this point on!! NOT dep-tracked!! analyzer/compiler MUST use IndexView instead!!
 	///don't mess with these unless you know what the fuck you're doing!!
