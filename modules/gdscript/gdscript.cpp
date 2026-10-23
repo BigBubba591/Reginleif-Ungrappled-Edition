@@ -2364,33 +2364,10 @@ void GDScriptLanguage::finish() {
 	///so collect and destroy orphan trait methods here
 	{
 		Vector<GDScriptFunction*> impl_functions_to_delete;
-
-		for (const KeyValue<Variant::Type, HashMap<StringName, GDScriptFunction*>>& E : native_impl_methods) {
-			for (const KeyValue<StringName, GDScriptFunction*>& M : E.value) {
-				if (M.value != nullptr && !impl_functions_to_delete.has(M.value)) {
-					impl_functions_to_delete.push_back(M.value);
-				}
-			}
+		{
+			MutexLock lock(mutex);
+			impl_table.take_all_functions(impl_functions_to_delete);
 		}
-		for (const KeyValue<StringName, HashMap<StringName, GDScriptFunction*>>& E : native_class_impl_methods) {
-			for (const KeyValue<StringName, GDScriptFunction*>& M : E.value) {
-				if (M.value != nullptr && !impl_functions_to_delete.has(M.value)) {
-					impl_functions_to_delete.push_back(M.value);
-				}
-			}
-		}
-		for (const KeyValue<StringName, HashMap<StringName, GDScriptFunction*>>& E : script_class_impl_methods) {
-			for (const KeyValue<StringName, GDScriptFunction*>& M : E.value) {
-				if (M.value != nullptr && !impl_functions_to_delete.has(M.value)) {
-					impl_functions_to_delete.push_back(M.value);
-				}
-			}
-		}
-
-		native_impl_methods.clear();
-		native_class_impl_methods.clear();
-		script_class_impl_methods.clear();
-		native_class_impl_method_cache.clear();
 
 		for (GDScriptFunction* function : impl_functions_to_delete) {
 			memdelete(function);
@@ -2703,19 +2680,9 @@ void GDScriptLanguage::reload_scripts(const Array &p_scripts) {
 
 	///second pass, after the reload above
 	Vector<String> newly_invalidated;
-	for (const KeyValue<Ref<GDScript>, HashMap<ObjectID, List<Pair<StringName, Variant>>>>& E : to_reload) {
-		Ref<GDScript> scr = E.key;
-		if (scr.is_null() || !scr->is_script_valid()) {
-			continue;
-		}
-		StringName fqcn = StringName(scr->get_fully_qualified_name());
-		if (fqcn == StringName()) {
-			continue;
-		}
-		Vector<String> invalidated = GDScriptCache::get_paths_invalidated_by_new_subclass(fqcn);
-		for (const String& path : invalidated) {
-			newly_invalidated.push_back(path);
-		}
+	if (RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton()) {
+		index_service->commit();
+		newly_invalidated = index_service->take_stale();
 	}
 
 	if (!newly_invalidated.is_empty()) {
@@ -3034,193 +3001,83 @@ thread_local uint32_t GDScriptLanguage::_call_stack_size = 0;
 
 void GDScriptLanguage::register_native_impl_method(Variant::Type p_type, const StringName& p_method_name, GDScriptFunction* p_function) {
 	MutexLock lock(mutex);
-	native_impl_methods[p_type][p_method_name] = p_function;
+	impl_table.register_method(RuntimeImplTable::Key::builtin(p_type), p_method_name, p_function);
 }
 
 void GDScriptLanguage::unregister_native_impl_methods_for_function(GDScriptFunction* p_function) {
 	MutexLock lock(mutex);
-	for (HashMap<Variant::Type, HashMap<StringName, GDScriptFunction*>>::Iterator E = native_impl_methods.begin(); E;) {
-		HashMap<Variant::Type, HashMap<StringName, GDScriptFunction*>>::Iterator next = E;
-		++next;
-		HashMap<StringName, GDScriptFunction*>& methods = E->value;
-		for (HashMap<StringName, GDScriptFunction*>::Iterator M = methods.begin(); M;) {
-			HashMap<StringName, GDScriptFunction*>::Iterator next_m = M;
-			++next_m;
-			if (M->value == p_function) {
-				methods.remove(M);
-			}
-			M = next_m;
-		}
-		if (methods.is_empty()) {
-			native_impl_methods.remove(E);
-		}
-		E = next;
-	}
+	impl_table.unregister_function(p_function);
 }
 
 bool GDScriptLanguage::has_native_impl_methods(Variant::Type p_type) const {
 	MutexLock lock(mutex);
-	bool found = native_impl_methods.has(p_type);
-	return found;
+	return impl_table.has_any(RuntimeImplTable::Key::builtin(p_type));
 }
 
 GDScriptFunction* GDScriptLanguage::get_native_impl_method(Variant::Type p_type, const StringName& p_method_name) const {
 	MutexLock lock(mutex);
-	HashMap<Variant::Type, HashMap<StringName, GDScriptFunction*>>::ConstIterator E = native_impl_methods.find(p_type);
-	if (!E) {
-		return nullptr;
-	}
-	HashMap<StringName, GDScriptFunction*>::ConstIterator M = E->value.find(p_method_name);
-	return M ? M->value : nullptr;
+	return impl_table.find(RuntimeImplTable::Key::builtin(p_type), p_method_name);
 }
 
 void GDScriptLanguage::register_enum_impl_method(const StringName& p_enum_key, const StringName& p_method_name, GDScriptFunction* p_function) {
 	MutexLock lock(mutex);
-	enum_impl_methods[p_enum_key][p_method_name] = p_function;
+	impl_table.register_method(RuntimeImplTable::Key::enum_type(p_enum_key), p_method_name, p_function);
 }
 
 void GDScriptLanguage::unregister_enum_impl_methods_for_function(GDScriptFunction* p_function) {
 	MutexLock lock(mutex);
-	for (HashMap<StringName, HashMap<StringName, GDScriptFunction*>>::Iterator E = enum_impl_methods.begin(); E;) {
-		HashMap<StringName, HashMap<StringName, GDScriptFunction*>>::Iterator next = E;
-		++next;
-		HashMap<StringName, GDScriptFunction*>& methods = E->value;
-		for (HashMap<StringName, GDScriptFunction*>::Iterator M = methods.begin(); M;) {
-			HashMap<StringName, GDScriptFunction*>::Iterator next_m = M;
-			++next_m;
-			if (M->value == p_function) {
-				methods.remove(M);
-			}
-			M = next_m;
-		}
-		if (methods.is_empty()) {
-			enum_impl_methods.remove(E);
-		}
-		E = next;
-	}
+	impl_table.unregister_function(p_function);
 }
 
 bool GDScriptLanguage::has_enum_impl_methods(const StringName& p_enum_key) const {
 	MutexLock lock(mutex);
-	return enum_impl_methods.has(p_enum_key);
+	return impl_table.has_any(RuntimeImplTable::Key::enum_type(p_enum_key));
 }
 
 GDScriptFunction* GDScriptLanguage::get_enum_impl_method(const StringName& p_enum_key, const StringName& p_method_name) const {
 	MutexLock lock(mutex);
-	HashMap<StringName, HashMap<StringName, GDScriptFunction*>>::ConstIterator E = enum_impl_methods.find(p_enum_key);
-	if (!E) {
-		return nullptr;
-	}
-	HashMap<StringName, GDScriptFunction*>::ConstIterator M = E->value.find(p_method_name);
-	return M ? M->value : nullptr;
+	return impl_table.find(RuntimeImplTable::Key::enum_type(p_enum_key), p_method_name);
 }
 
 void GDScriptLanguage::register_native_class_impl_method(const StringName& p_native_class, const StringName& p_method_name, GDScriptFunction* p_function) {
 	MutexLock lock(mutex);
-	native_class_impl_methods[p_native_class][p_method_name] = p_function;
-	native_class_impl_method_cache.clear();
+	impl_table.register_method(RuntimeImplTable::Key::native(p_native_class), p_method_name, p_function);
 }
 
 void GDScriptLanguage::unregister_native_class_impl_methods_for_function(GDScriptFunction* p_function) {
 	MutexLock lock(mutex);
-	for (HashMap<StringName, HashMap<StringName, GDScriptFunction*>>::Iterator E = native_class_impl_methods.begin(); E;) {
-		HashMap<StringName, HashMap<StringName, GDScriptFunction*>>::Iterator next = E;
-		++next;
-		HashMap<StringName, GDScriptFunction*>& methods = E->value;
-		for (HashMap<StringName, GDScriptFunction*>::Iterator M = methods.begin(); M;) {
-			HashMap<StringName, GDScriptFunction*>::Iterator next_m = M;
-			++next_m;
-			if (M->value == p_function) {
-				methods.remove(M);
-			}
-			M = next_m;
-		}
-		if (methods.is_empty()) {
-			native_class_impl_methods.remove(E);
-		}
-		E = next;
-	}
-	///clear cache onteardown
-	native_class_impl_method_cache.clear();
+	impl_table.unregister_function(p_function);
 }
 
 
 void GDScriptLanguage::register_script_class_impl_method(const StringName& p_script_class, const StringName& p_method_name, GDScriptFunction* p_function) {
 	MutexLock lock(mutex);
-	script_class_impl_methods[p_script_class][p_method_name] = p_function;
+	impl_table.register_method(RuntimeImplTable::Key::script_class(p_script_class), p_method_name, p_function);
 }
 
 void GDScriptLanguage::unregister_script_class_impl_methods_for_function(GDScriptFunction* p_function) {
 	MutexLock lock(mutex);
-	for (HashMap<StringName, HashMap<StringName, GDScriptFunction*>>::Iterator E = script_class_impl_methods.begin(); E;) {
-		HashMap<StringName, HashMap<StringName, GDScriptFunction*>>::Iterator next = E;
-		++next;
-		HashMap<StringName, GDScriptFunction*>& methods = E->value;
-		for (HashMap<StringName, GDScriptFunction*>::Iterator M = methods.begin(); M;) {
-			HashMap<StringName, GDScriptFunction*>::Iterator next_m = M;
-			++next_m;
-			if (M->value == p_function) {
-				methods.remove(M);
-			}
-			M = next_m;
-		}
-		if (methods.is_empty()) {
-			script_class_impl_methods.remove(E);
-		}
-		E = next;
-	}
+	impl_table.unregister_function(p_function);
 }
 
 GDScriptFunction* GDScriptLanguage::get_script_class_impl_method(const StringName& p_script_class, const StringName& p_method_name) const {
 	MutexLock lock(mutex);
-	HashMap<StringName, HashMap<StringName, GDScriptFunction*>>::ConstIterator E = script_class_impl_methods.find(p_script_class);
-	if (!E) {
-		return nullptr;
-	}
-	HashMap<StringName, GDScriptFunction*>::ConstIterator M = E->value.find(p_method_name);
-	return M ? M->value : nullptr;
+	return impl_table.find(RuntimeImplTable::Key::script_class(p_script_class), p_method_name);
 }
 
 GDScriptFunction* GDScriptLanguage::find_native_class_impl_method_cached(const StringName& p_concrete_class, const StringName& p_method_name) const {
-	{
-		MutexLock lock(mutex);
-		HashMap<StringName, HashMap<StringName, GDScriptFunction*>>::ConstIterator cached_class = native_class_impl_method_cache.find(p_concrete_class);
-		if (cached_class) {
-			HashMap<StringName, GDScriptFunction*>::ConstIterator cached_method = cached_class->value.find(p_method_name);
-			if (cached_method) {
-				return cached_method->value;
-			}
-		}
-	}
-
-	StringName walk_class = p_concrete_class;
-	GDScriptFunction* found = nullptr;
-	while (walk_class != StringName()) {
-		found = get_native_class_impl_method(walk_class, p_method_name);
-		if (found != nullptr) {
-			break;
-		}
-		walk_class = ClassDB::get_parent_class(walk_class);
-	}
-
 	MutexLock lock(mutex);
-	native_class_impl_method_cache[p_concrete_class][p_method_name] = found;
-	return found;
+	return impl_table.find_in_native_chain(p_concrete_class, p_method_name);
 }
 
 bool GDScriptLanguage::has_native_class_impl_methods(const StringName& p_native_class) const {
 	MutexLock lock(mutex);
-	return native_class_impl_methods.has(p_native_class);
+	return impl_table.has_any(RuntimeImplTable::Key::native(p_native_class));
 }
 
 GDScriptFunction* GDScriptLanguage::get_native_class_impl_method(const StringName& p_native_class, const StringName& p_method_name) const {
 	MutexLock lock(mutex);
-	HashMap<StringName, HashMap<StringName, GDScriptFunction*>>::ConstIterator E = native_class_impl_methods.find(p_native_class);
-	if (!E) {
-		return nullptr;
-	}
-	HashMap<StringName, GDScriptFunction*>::ConstIterator M = E->value.find(p_method_name);
-	return M ? M->value : nullptr;
+	return impl_table.find(RuntimeImplTable::Key::native(p_native_class), p_method_name);
 }
 
 GDScriptLanguage::CallLevel *GDScriptLanguage::_get_stack_level(uint32_t p_level) {
