@@ -350,6 +350,7 @@ class ProgramIndexService {
 	HashMap<String, Ref<FileSummary>> committed;
 	HashMap<String, Ref<FileSummary>> staged; ///null Ref means removal
 	HashMap<String, DependencySet> script_deps;
+	Vector<String> pending_stale;
 	uint64_t epoch_counter = 0;
 	SafeFlag populated;
 
@@ -368,12 +369,12 @@ public:
 
 	void stage_file(const Ref<FileSummary>& p_summary);
 	void stage_removal(const String& p_path);
-	void stage_removals_not_in(const HashSet<String>& p_live);
-
+	int stage_removals_not_in(const HashSet<String>& p_live);
 	Vector<String> commit();
 
 	void set_dependencies(const String& p_script_path, const DependencySet& p_deps);
-	void forget_script(const String& p_script_path);
+	void forget_script(const String &p_script_path);
+	Vector<String> take_stale();
 
 	ProgramIndexService();
 	~ProgramIndexService();
