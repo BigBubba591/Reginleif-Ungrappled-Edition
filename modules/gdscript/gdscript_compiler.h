@@ -35,6 +35,7 @@
 #include "gdscript_function.h"
 #include "gdscript_optimiser.h"
 #include "gdscript_parser.h"
+#include "program_index.h"
 
 #include "core/object/gdtype.h"
 #include "core/templates/hash_set.h"
@@ -172,6 +173,7 @@ class GDScriptCompiler {
 	bool _is_local_or_parameter(CodeGen &codegen, const StringName &p_name);
 
 	int inline_budget_used = 0;
+	RGIndex::DependencySet inline_deps;
 
 	///the next two values can be cranked by YOU! (yes, you!) to tune inlining!
 	static constexpr int INLINE_BUDGET_MAX = 4000; ///how aggressively to inline functions within functions

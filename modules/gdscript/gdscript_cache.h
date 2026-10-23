@@ -35,7 +35,6 @@
 
 #include "core/object/ref_counted.h"
 #include "core/os/safe_binary_mutex.h"
-#include "core/templates/safe_refcount.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
 
@@ -75,25 +74,10 @@ private:
 	bool clearing = false;
 	bool abandoned = false;
 
-	int pin_count = 0;
-	bool clear_pending = false;
-
 	friend class GDScriptCache;
 	friend class GDScript;
 
 public:
-	void pin() { pin_count++; }
-	void unpin() {
-		pin_count--;
-		if (pin_count <= 0) {
-			pin_count = 0;
-			if (clear_pending) {
-				clear_pending = false;
-				clear();
-			}
-		}
-	}
-
 	Status get_status() const;
 	String get_path() const;
 	uint32_t get_source_hash() const;
@@ -107,27 +91,6 @@ public:
 
 	GDScriptParserRef() {}
 	~GDScriptParserRef();
-};
-
-///just a temporary construct until the datatype to typekey resolver is done
-///no worries
-class GDScriptParserPin : public RefCounted {
-	GDSOFTCLASS(GDScriptParserPin, RefCounted);
-
-	Ref<GDScriptParserRef> ref;
-
-public:
-	explicit GDScriptParserPin(const Ref<GDScriptParserRef>& p_ref) :
-			ref(p_ref) {
-		if (ref.is_valid()) {
-			ref->pin();
-		}
-	}
-	~GDScriptParserPin() {
-		if (ref.is_valid()) {
-			ref->unpin();
-		}
-	}
 };
 
 namespace GDScriptTests {
@@ -153,18 +116,8 @@ private:
 	HashMap<String, HashSet<String>> dependencies;
 	HashMap<String, HashSet<String>> parser_inverse_dependencies;
 
-	HashMap<StringName, HashSet<StringName>> direct_subclasses_by_fqcn;
-	HashMap<StringName, String> fqcn_owning_path;
-	HashMap<StringName, HashSet<String>> inline_assumption_dependents;
-
-	SafeFlag subclass_graph_project_scanned;
-	bool subclass_graph_project_scanning = false;
-
 	///trait stuff
 	HashMap<StringName, String> global_traits;
-
-	///impl stuff, for cross-file collision detection
-	HashMap<StringName, Vector<GlobalImplClaim>> global_impls;
 
 	friend class GDScript;
 	friend class GDScriptParserRef;
@@ -213,23 +166,11 @@ public:
 	static String get_global_trait_path(const StringName& p_trait_name);
 	static void get_global_trait_list(List<StringName>* r_traits);
 
-	static void add_global_impl_claims(const StringName& p_target_type_key, const StringName& p_trait_name, const HashMap<StringName, Ref<GDScriptTraitSignatureSnapshot>>& p_method_signatures, const String& p_path);
-	static void remove_global_impls_by_path(const String& p_path);
-	static Vector<GlobalImplClaim> get_global_impl_claims(const StringName& p_target_type_key);
-
 	static void ensure_impl_providers_loaded_for_native_class(const StringName& p_class);
 	static void ensure_impl_providers_loaded_for_builtin(Variant::Type p_type);
 	static void ensure_impl_providers_loaded_for_enums();
 
 	static void clear();
-
-	static void register_subclass_edge(const StringName& p_base_fqcn, const String& p_base_path, const StringName& p_subclass_fqcn, const String& p_subclass_path);
-	static String get_owning_path_for_fqcn(const StringName& p_fqcn);
-	static bool is_fqcn_reachable_subclass(const StringName& p_ancestor_fqcn, const StringName& p_fqcn);
-	static Vector<StringName> get_all_reachable_subclasses(const StringName& p_base_fqcn);
-	static void register_inline_assumption(const StringName& p_assumed_base_fqcn, const String& p_dependent_path);
-	static Vector<String> get_paths_invalidated_by_new_subclass(const StringName& p_base_fqcn);
-	static void ensure_subclass_graph_project_scanned();
 
 	GDScriptCache();
 	~GDScriptCache();

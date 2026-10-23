@@ -61,9 +61,6 @@ class GDScriptTraitAnalyzer {
 	/// every impl block resolved in this file, in declaration order.
 	List<Ref<GDScriptImpl>> resolved_impls;
 
-	bool wiped_stale_claims_for_this_pass = false;
-	void _wipe_stale_claims_once();
-
 private:
     void push_error(const String& p_message, const GDScriptParser::Node* p_source = nullptr);
 
@@ -72,8 +69,6 @@ private:
     bool _signatures_match(const Ref<GDScriptTraitSignatureSnapshot>& p_required, GDScriptParser::FunctionNode* p_provided);
 
     bool _type_is_or_inherits(const GDScriptParser::DataType& p_type, const GDScriptParser::DataType& p_target_type) const;
-	StringName _impl_target_key(const GDScriptParser::DataType& p_type) const;
-	String _owning_path_for_type(const GDScriptParser::DataType& p_type) const;
 
 public:
 	Error resolve_trait(GDScriptParser::TraitNode* p_trait);

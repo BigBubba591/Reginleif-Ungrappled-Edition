@@ -38,6 +38,7 @@
 #include "gdscript_optimiser.h"
 #include "gdscript_trait_analyzer.h"
 #include "gdscript_utility_functions.h"
+#include "program_index.h"
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
@@ -857,7 +858,7 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 											gen->write_call_method_bind(result, base, method, arguments);
 										}
 									} else {
-										GDScriptCache::ensure_global_impls_scanned();
+										GDScriptCache::ensure_impl_providers_loaded_for_native_class(class_name);
 										if (GDScriptFunction* impl_function = GDScriptLanguage::get_singleton()->find_native_class_impl_method_cached(class_name, call->function_name)) {
 											gen->write_call_native_impl_cached(result, base, impl_function, arguments);
 										} else {
@@ -873,14 +874,14 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 									if (Variant::has_builtin_method(base.type.builtin_type, call->function_name)) {
 										gen->write_call_builtin_type(result, base, base.type.builtin_type, call->function_name, arguments);
 									} else if (base_enum_type.enum_native_type != StringName()) {
-										GDScriptCache::ensure_global_impls_scanned();
+										GDScriptCache::ensure_impl_providers_loaded_for_enums();
 										if (GDScriptFunction* impl_function = GDScriptLanguage::get_singleton()->get_enum_impl_method(base_enum_type.enum_native_type, call->function_name)) {
 											gen->write_call_native_impl_cached(result, base, impl_function, arguments);
 										} else {
 											gen->write_call(result, base, call->function_name, arguments);
 										}
 									} else {
-										GDScriptCache::ensure_global_impls_scanned();
+										GDScriptCache::ensure_impl_providers_loaded_for_builtin(base.type.builtin_type);
 										if (GDScriptFunction* impl_function = GDScriptLanguage::get_singleton()->get_native_impl_method(base.type.builtin_type, call->function_name)) {
 											gen->write_call_native_impl_cached(result, base, impl_function, arguments);
 										} else {
@@ -1024,7 +1025,7 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 					///so resolve the impl function now, at compile time
 					///while we still have the enum's identity, same shit as above
 
-					GDScriptCache::ensure_global_impls_scanned();
+					GDScriptCache::ensure_impl_providers_loaded_for_enums();
 					if (GDScriptFunction* impl_function = GDScriptLanguage::get_singleton()->get_enum_impl_method(base_enum_type.enum_native_type, name)) {
 						gen->write_get_named_enum_impl_cached(result, name, base, impl_function);
 						wrote_enum_impl_cached = true;
@@ -2228,37 +2229,16 @@ int GDScriptCompiler::_count_ast_nodes(const GDScriptParser::Node* p_node) {
 }
 
 bool GDScriptCompiler::_no_reachable_subclass_overrides(const StringName& p_base_fqcn, const StringName& p_method_name) {
-	GDScriptCache::ensure_subclass_graph_project_scanned();
-
-	Vector<StringName> subclass_fqcns = GDScriptCache::get_all_reachable_subclasses(p_base_fqcn);
-	if (subclass_fqcns.is_empty()) {
-		return true; ///nothing subclasses this
+	RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton();
+	if (index_service == nullptr) {
+		return false;
 	}
-
-	for (const StringName &sub_fqcn : subclass_fqcns) {
-		String sub_path = GDScriptCache::get_owning_path_for_fqcn(sub_fqcn);
-		if (sub_path.is_empty()) {
-			return false; ///shouldn't happen, fuck me if it does ig
-		}
-
-		Error err = OK;
-		Ref<GDScriptParserRef> parser_ref = GDScriptCache::get_parser(sub_path, GDScriptParserRef::INTERFACE_SOLVED, err);
-		if (err != OK || parser_ref.is_null() || parser_ref->get_parser() == nullptr) {
-			return false;
-		}
-		GDScriptParser::ClassNode* sub_class = parser_ref->get_parser()->find_class(String(sub_fqcn));
-		if (sub_class == nullptr) {
-			return false;
-		}
-		if (sub_class->members_indices.has(p_method_name)) {
-			uint32_t idx = sub_class->members_indices[p_method_name];
-			if (idx < sub_class->members.size() && sub_class->members[idx].type == GDScriptParser::ClassNode::Member::FUNCTION) {
-				return false; ///overridden, oops, gtfo
-			}
-		}
+	index_service->ensure_populated();
+	RGIndex::IndexView view(index_service->get_snapshot(), &inline_deps);
+	if (view.raw()->resolve_class_key(p_base_fqcn) == StringName()) {
+		return false;
 	}
-
-	return true;
+	return view.no_reachable_subclass_overrides(p_base_fqcn, p_method_name);
 }
 
 ///chokepoint for the entire inline feature! everything inline related sets off here
@@ -2323,8 +2303,13 @@ const GDScriptParser::FunctionNode* GDScriptCompiler::_get_inline_candidate(Code
 	if (!_no_reachable_subclass_overrides(defining_class->fqcn, p_function_name)) {
 		return nullptr;
 	}
-	if (codegen.script != nullptr) {
-		GDScriptCache::register_inline_assumption(defining_class->fqcn, codegen.script->get_path());
+
+	{
+		if (RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton()) {
+			RGIndex::IndexView view(index_service->get_snapshot(), &inline_deps);
+			RGIndex::ProgramIndex::MethodHashes hashes;
+			view.get_inline_body_hashes(defining_class->fqcn, p_function_name, hashes);
+		}
 	}
 
 	for (uint32_t i = 0; i < codegen.inline_call_stack.size(); i++) {
@@ -3625,28 +3610,6 @@ Error GDScriptCompiler::_prepare_compilation(GDScript *p_script, const GDScriptP
 }
 
 Error GDScriptCompiler::_compile_class(GDScript *p_script, const GDScriptParser::ClassNode *p_class, bool p_keep_state) {
-	// Compile member functions, getters, and setters.
-	for (const GDScriptParser::ClassNode::Member &member : p_class->members) {
-		if (member.type == member.FUNCTION) {
-			const GDScriptParser::FunctionNode *function = member.function;
-			Error err = OK;
-			_parse_function(err, p_script, p_class, function);
-			if (err) {
-				return err;
-			}
-		} else if (member.type == member.VARIABLE) {
-			const GDScriptParser::VariableNode *variable = member.variable;
-			if (variable->property == GDScriptParser::VariableNode::PROP_INLINE) {
-				if (variable->setter != nullptr) {
-					RETURN_IF_ERROR(_parse_setter_getter(p_script, p_class, variable, true));
-				}
-				if (variable->getter != nullptr) {
-					RETURN_IF_ERROR(_parse_setter_getter(p_script, p_class, variable, false));
-				}
-			}
-		}
-	}
-
 	///compile impl-provided methods!  these are funcs from `impl Trait for X` blocks, stashed by
 	///the trait analyzer onto the ImplNode itself since we've got no analyzer handle of our own :sob:
 	///what the fuck is this architecture
@@ -3696,7 +3659,7 @@ Error GDScriptCompiler::_compile_class(GDScript *p_script, const GDScriptParser:
 			///fine since a class only ever has one impl per method name (analyzser enforces that) ((or at least it should))
 		}
 
-		if (!is_native_impl_target && impl_node->trait_name != nullptr) {
+		if (impl_node->trait_name != nullptr) {
 			Error trait_err = OK;
 			Ref<GDScriptTrait> gd_trait = GDScriptCache::get_cached_trait(
 					GDScriptCache::get_global_trait_path(impl_node->trait_name->name),
@@ -3734,6 +3697,27 @@ Error GDScriptCompiler::_compile_class(GDScript *p_script, const GDScriptParser:
 						p_script->member_functions[mangled_key] = impl_function;
 						GDScriptLanguage::get_singleton()->register_native_class_impl_method(impl_target.native_type, E.key, impl_function);
 					}
+				}
+			}
+		}
+	}
+
+	for (const GDScriptParser::ClassNode::Member &member : p_class->members) {
+		if (member.type == member.FUNCTION) {
+			const GDScriptParser::FunctionNode *function = member.function;
+			Error err = OK;
+			_parse_function(err, p_script, p_class, function);
+			if (err) {
+				return err;
+			}
+		} else if (member.type == member.VARIABLE) {
+			const GDScriptParser::VariableNode *variable = member.variable;
+			if (variable->property == GDScriptParser::VariableNode::PROP_INLINE) {
+				if (variable->setter != nullptr) {
+					RETURN_IF_ERROR(_parse_setter_getter(p_script, p_class, variable, true));
+				}
+				if (variable->getter != nullptr) {
+					RETURN_IF_ERROR(_parse_setter_getter(p_script, p_class, variable, false));
 				}
 			}
 		}
@@ -3989,6 +3973,7 @@ Error GDScriptCompiler::compile(const GDScriptParser *p_parser, GDScript *p_scri
 	error = "";
 	parser = p_parser;
 	main_script = p_script;
+	inline_deps.clear();
 
 	const GDScriptParser::ClassNode* root = parser->get_tree();
 
@@ -4095,6 +4080,10 @@ Error GDScriptCompiler::compile(const GDScriptParser *p_parser, GDScript *p_scri
 
 	if (has_static_data && !root->annotated_static_unload) {
 		GDScriptCache::add_static_script(p_script);
+	}
+
+	if (RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton()) {
+		index_service->set_dependencies(main_script->path, inline_deps);
 	}
 
 	Error err = GDScriptCache::finish_compiling(main_script->path);
