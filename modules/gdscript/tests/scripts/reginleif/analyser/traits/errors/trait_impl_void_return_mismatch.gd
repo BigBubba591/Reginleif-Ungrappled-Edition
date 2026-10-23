@@ -1,7 +1,7 @@
 trait VoidReturnMismatch
 
-func test() -> void
+func void_mismatch() -> void
 
 impl for int {
-	func test() -> int { return self }
+	func void_mismatch() -> int { return self }
 }

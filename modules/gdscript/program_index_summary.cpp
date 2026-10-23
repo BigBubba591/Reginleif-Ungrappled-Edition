@@ -46,13 +46,19 @@
 #include "gdscript_cache.h"
 #include "gdscript_parser.h"
 
+#include "core/config/project_settings.h"
 #include "core/io/file_access.h"
 #include "core/io/resource_loader.h"
 
 namespace RGIndex {
 
 String canonical_path(const String& p_path) {
-	return GDScript::canonicalize_path(p_path);
+	String s = GDScript::canonicalize_path(p_path);
+	if (s.begins_with("res://")) {
+		return s;
+	}
+	s = ProjectSettings::get_singleton()->localize_path(s);
+	return s.simplify_path();
 }
 
 String TypeKey::debug_string() const {

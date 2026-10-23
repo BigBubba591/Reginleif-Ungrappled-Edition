@@ -37,6 +37,7 @@
 #include "gdscript_trait.h"
 #include "program_index.h"
 
+#include "core/config/project_settings.h"
 #include "core/io/file_access.h"
 #include "core/io/resource_loader.h"
 #include "core/object/class_db.h"
@@ -359,7 +360,8 @@ static void _ensure_impl_providers_loaded_impl(int p_mode, const StringName& p_c
 	}
 	paths.sort();
 
-	for (const String& path : paths) {
+	for (const String& raw_path : paths) {
+		const String path = raw_path.begins_with("res://") ? raw_path : ProjectSettings::get_singleton()->localize_path(raw_path);
 		if (GDScriptCache::get_cached_script(path).is_valid()) {
 			continue; ///do NOT fucking reload
 		}
