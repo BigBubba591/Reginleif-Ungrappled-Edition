@@ -42,6 +42,7 @@
 #include "core/io/resource_loader.h"
 #include "core/object/class_db.h"
 #include "core/templates/rb_set.h"
+#include "core/templates/safe_refcount.h"
 #include "core/templates/vector.h"
 
 GDScriptParserRef::Status GDScriptParserRef::get_status() const {
@@ -372,20 +373,39 @@ static void _ensure_impl_providers_loaded_impl(int p_mode, const StringName& p_c
 
 static void _ensure_impl_providers_loaded(int p_mode, const StringName& p_class, Variant::Type p_type) {
 	static Mutex ensured_mutex;
-	static HashSet<String> ensured;
-	const String memo = vformat("%d:%s:%d", p_mode, String(p_class), (int)p_type);
-	{
+	static HashSet<String> ensured_native_classes;     ///0
+	static SafeNumeric<uint64_t> ensured_builtin_mask; ///1
+	static SafeFlag ensured_enums;                     ///2
+
+	static_assert(Variant::VARIANT_MAX <= 64, "ensured_builtin_mask needs one bit per Variant::Type");
+
+	if (p_mode == 0) {
 		MutexLock lock(ensured_mutex);
-		if (ensured.has(memo)) {
+		if (ensured_native_classes.has(String(p_class))) {
 			return;
 		}
-	}
-	_ensure_impl_providers_loaded_impl(p_mode, p_class, p_type);
-	if (RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton()) {
-		if (index_service->is_populated()) {
-			MutexLock lock(ensured_mutex);
-			ensured.insert(memo);
+	} else if (p_mode == 1) {
+		if ((ensured_builtin_mask.get() >> (uint32_t)p_type) & 1ULL) {
+			return;
 		}
+	} else if (ensured_enums.is_set()) {
+		return;
+	}
+
+	_ensure_impl_providers_loaded_impl(p_mode, p_class, p_type);
+
+	RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton();
+	if (index_service == nullptr || !index_service->is_populated()) {
+		return;
+	}
+
+	MutexLock lock(ensured_mutex);
+	if (p_mode == 0) {
+		ensured_native_classes.insert(String(p_class));
+	} else if (p_mode == 1) {
+		ensured_builtin_mask.set(ensured_builtin_mask.get() | (1ULL << (uint32_t)p_type));
+	} else {
+		ensured_enums.set();
 	}
 }
 
