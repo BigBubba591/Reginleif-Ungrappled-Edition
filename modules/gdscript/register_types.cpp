@@ -36,6 +36,7 @@
 #include "gdscript_resource_format.h"
 #include "gdscript_tokenizer_buffer.h"
 #include "gdscript_utility_functions.h"
+#include "program_index.h"
 
 #ifdef TOOLS_ENABLED
 #include "editor/gdscript_editor_language.h"
@@ -56,11 +57,13 @@
 #include "core/io/file_access.h"
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
+#include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 
 #ifdef TOOLS_ENABLED
 #include "editor/editor_node.h"
 #include "editor/export/editor_export.h"
+#include "editor/file_system/editor_file_system.h"
 #include "editor/translations/editor_translation_parser.h"
 
 #ifndef GDSCRIPT_NO_LSP
@@ -121,6 +124,38 @@ public:
 	virtual String get_name() const override { return "GDScript"; }
 };
 
+static void _collect_live_script_paths(EditorFileSystemDirectory* p_dir, HashSet<String>& r_live) {
+	if (p_dir == nullptr) {
+		return;
+	}
+	for (int i = 0; i < p_dir->get_file_count(); i++) {
+		const String path = p_dir->get_file_path(i);
+		if (path.has_extension("gd") || path.has_extension("gdc")) {
+			r_live.insert(RGIndex::canonical_path(path));
+		}
+	}
+	for (int i = 0; i < p_dir->get_subdir_count(); i++) {
+		_collect_live_script_paths(p_dir->get_subdir(i), r_live);
+	}
+}
+
+static void _gdscript_filesystem_changed() {
+	RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton();
+	EditorFileSystem* efs = EditorFileSystem::get_singleton();
+	if (index_service == nullptr || efs == nullptr || !index_service->is_populated() || efs->is_scanning()) {
+		return;
+	}
+
+	HashSet<String> live;
+	_collect_live_script_paths(efs->get_filesystem(), live);
+	if (live.is_empty()) {
+		return; ///DONT blow it up here!! otherwise the entire index gets nuked!!
+	}
+
+	index_service->stage_removals_not_in(live);
+	index_service->commit();
+}
+
 static void _editor_init() {
 	Ref<GDScriptExportPlugin> gd_export;
 	gd_export.instantiate();
@@ -131,6 +166,10 @@ static void _editor_init() {
 	gdscript_syntax_highlighter.instantiate();
 	ScriptEditor::get_singleton()->register_syntax_highlighter(gdscript_syntax_highlighter);
 #endif
+
+	if (EditorFileSystem *efs = EditorFileSystem::get_singleton()) {
+		efs->connect("filesystem_changed", callable_mp_static(&_gdscript_filesystem_changed));
+	}
 }
 
 #endif // TOOLS_ENABLED

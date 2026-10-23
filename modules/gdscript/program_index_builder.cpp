@@ -441,7 +441,7 @@ void ProgramIndexBuilder::_validate() {
 						_diag(ej.owning_path, ej.line, tag + vformat(R"(Method "%s" is provided by both trait "%s" and trait "%s" (in "%s") for the same type, so trait dispatch is ambiguous.)", String(M.key), String(ej.trait_name), String(ei.trait_name), ei.owning_path));
 					}
 				}
-				
+
 			}
 		}
 	}
@@ -857,12 +857,14 @@ void ProgramIndexService::stage_removal(const String& p_path) {
 	}
 }
 
-void ProgramIndexService::stage_removals_not_in(const HashSet<String>& p_live) {
+int ProgramIndexService::stage_removals_not_in(const HashSet<String>& p_live) {
 	MutexLock lock(mutex);
 
+	int removed = 0;
 	for (const KeyValue<String, Ref<FileSummary>>& E : committed) {
 		if (!p_live.has(E.key)) {
 			staged[E.key] = Ref<FileSummary>();
+			removed++;
 		}
 	}
 
@@ -872,6 +874,7 @@ void ProgramIndexService::stage_removals_not_in(const HashSet<String>& p_live) {
 		}
 	}
 
+	return removed;
 }
 
 Vector<String> ProgramIndexService::commit() {
@@ -914,6 +917,9 @@ Vector<String> ProgramIndexService::commit() {
 
 			if (!holds) {
 				stale.push_back(S.key);
+				if (!pending_stale.has(S.key)) {
+					pending_stale.push_back(S.key);
+				}
 			}
 		}
 	}
@@ -928,6 +934,13 @@ void ProgramIndexService::set_dependencies(const String& p_script_path, const De
 void ProgramIndexService::forget_script(const String& p_script_path) {
 	MutexLock lock(mutex);
 	script_deps.erase(canonical_path(p_script_path));
+}
+
+Vector<String> ProgramIndexService::take_stale() {
+	MutexLock lock(mutex);
+	Vector<String> out = pending_stale;
+	pending_stale.clear();
+	return out;
 }
 
 }/// namespace RGIndex
