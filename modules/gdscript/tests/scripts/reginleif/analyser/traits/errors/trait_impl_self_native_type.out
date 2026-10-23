@@ -1,2 +1,2 @@
 GDTEST_ANALYZER_ERROR
->> ERROR at line 6: Invalid operands "Node" and "int" for "+" operator.
+>> ERROR at line 6: Invalid operands "Marker3D" and "int" for "+" operator.

@@ -35,12 +35,14 @@
 #include "gdscript_compiler.h"
 #include "gdscript_parser.h"
 #include "gdscript_trait.h"
+#include "program_index.h"
 
-#include "core/io/dir_access.h"
+#include "core/config/project_settings.h"
 #include "core/io/file_access.h"
 #include "core/io/resource_loader.h"
-#include "core/config/project_settings.h"
+#include "core/object/class_db.h"
 #include "core/templates/rb_set.h"
+#include "core/templates/safe_refcount.h"
 #include "core/templates/vector.h"
 
 GDScriptParserRef::Status GDScriptParserRef::get_status() const {
@@ -85,6 +87,10 @@ Error GDScriptParserRef::raise_status(Status p_new_status) {
 	while (result == OK && p_new_status > status) {
 		switch (status) {
 			case EMPTY: {
+				if (trait_status != TRAIT_EMPTY) {
+					status = PARSED;
+					break;
+				}
 				// Calling parse will clear the parser, which can destruct another GDScriptParserRef which can clear the last reference to the script with this path, calling remove_script, which clears this GDScriptParserRef.
 				// It's ok if its the first thing done here.
 				get_parser()->clear();
@@ -225,16 +231,6 @@ void GDScriptCache::move_script(const String &p_from, const String &p_to) {
 		}
 		E = next;
 	}
-	for (HashMap<StringName, Vector<GlobalImplClaim>>::Iterator E = singleton->global_impls.begin(); E;) {
-		HashMap<StringName, Vector<GlobalImplClaim>>::Iterator next = E;
-		++next;
-		for (int i = 0; i < E->value.size(); i++) {
-			if (E->value[i].owning_path == p_from) {
-				E->value.write[i].owning_path = p_to;
-			}
-		}
-		E = next;
-	}
 }
 
 void GDScriptCache::remove_script(const String &p_path) {
@@ -270,130 +266,9 @@ void GDScriptCache::remove_script(const String &p_path) {
 	singleton->full_gdscript_cache.erase(p_path);
 
 	remove_global_trait_by_path(p_path);
-	remove_global_impls_by_path(p_path);
 
-	Vector<StringName> owned_fqcns;
-	for (const KeyValue<StringName, String>& E : singleton->fqcn_owning_path) {
-		if (E.value == p_path) {
-			owned_fqcns.push_back(E.key);
-		}
-	}
-	for (const StringName& fqcn : owned_fqcns) {
-		singleton->fqcn_owning_path.erase(fqcn);
-		singleton->direct_subclasses_by_fqcn.erase(fqcn);
-		singleton->inline_assumption_dependents.erase(fqcn);
-		for (KeyValue<StringName, HashSet<StringName>> &S : singleton->direct_subclasses_by_fqcn) {
-			S.value.erase(fqcn);
-		}
-	}
-	///this path might've been a dependent somewhere, so nuke it off
-	for (KeyValue<StringName, HashSet<String>>& D : singleton->inline_assumption_dependents) {
-		D.value.erase(p_path);
-	}
-}
-
-///hmm, i hear you ask... "why do you need to scan the entire fucking project?"
-///ah well... remember the whole inlining optimisation we were supposed to be doing?
-///well, imagine the case you inline something that depended on another script, yeah?
-///unfortunately for us, gdscript doesn't exactly guarantee that when you grab a script, its
-///deps are resolved...
-///so the best we're stuck for absolute fucking correctness is scanning the entire project once
-///and making sure every script is at least at INHERITANCE_SOLVED so we can start safely performing
-///inlining ops. this infra right here builds a subclass graph to ensure that.
-///hmm, might this explode compile times? ehhh, don't think so, at least from my testing.
-
-static void _collect_gd_paths_in_dir(const String& p_dir, Vector<String>& r_paths) {
-	Error err = OK;
-	Ref<DirAccess> dir = DirAccess::open(p_dir, &err);
-	if (err != OK || dir.is_null()) {
-		return;
-	}
-
-	if (dir->file_exists(".gdignore")) {
-		return;
-	}
-
-	dir->list_dir_begin();
-	String file_name = dir->get_next();
-	while (!file_name.is_empty()) {
-		if (dir->current_is_dir()) {
-			if (file_name != "." && file_name != ".." && file_name != "./") {
-				_collect_gd_paths_in_dir(p_dir.path_join(file_name), r_paths);
-			}
-		} else if (file_name.ends_with(".gd")) {
-			r_paths.push_back(p_dir.path_join(file_name));
-		}
-		file_name = dir->get_next();
-	}
-	dir->list_dir_end();
-}
-
-void GDScriptCache::ensure_subclass_graph_project_scanned() {
-	if (singleton->subclass_graph_project_scanned.is_set()) {
-		return;
-	}
-
-	{
-		MutexLock lock(singleton->mutex);
-		if (singleton->subclass_graph_project_scanned.is_set() || singleton->subclass_graph_project_scanning) {
-			return;
-		}
-		singleton->subclass_graph_project_scanning = true;
-	}
-
-	Vector<String> gd_paths;
-	_collect_gd_paths_in_dir("res://", gd_paths);
-
-	for (const String &path : gd_paths) {
-		Error err = OK;
-		Ref<GDScriptParserRef> parser_ref = GDScriptCache::get_parser(path, GDScriptParserRef::INHERITANCE_SOLVED, err);
-		(void)parser_ref; ///failures here are pre-existing project errors, i can't be assed about these
-	}
-
-	MutexLock lock(singleton->mutex);
-	singleton->subclass_graph_project_scanned.set();
-	singleton->subclass_graph_project_scanning = false;
-}
-
-static void _scan_trait_scripts_in_dir(const String& p_dir, Vector<String>* r_impl_paths = nullptr) {
-	Error err = OK;
-	Ref<DirAccess> dir = DirAccess::open(p_dir, &err);
-	if (err != OK || dir.is_null()) {
-		return;
-	}
-
-	if (dir->file_exists(".gdignore")) {
-		return;
-	}
-
-	dir->list_dir_begin();
-	String file_name = dir->get_next();
-	while (!file_name.is_empty()) {
-		if (dir->current_is_dir()) {
-			if (file_name != "." && file_name != ".." && file_name != "./") {
-				_scan_trait_scripts_in_dir(p_dir.path_join(file_name), r_impl_paths);
-			}
-		} else if (file_name.ends_with(".gd")) {
-			String script_path = p_dir.path_join(file_name);
-			Ref<FileAccess> f = FileAccess::open(script_path, FileAccess::READ, &err);
-			if (err == OK && f.is_valid()) {
-				GDScriptParser parser;
-				err = parser.parse(f->get_as_utf8_string(), script_path, false, false);
-				if (err == OK && parser.is_trait_script()) {
-					const GDScriptParser::TraitNode* trait = parser.get_trait_tree();
-					if (trait != nullptr && trait->identifier != nullptr) {
-						GDScriptCache::add_global_trait(trait->identifier->name, script_path);
-					}
-				} else if (err == OK && r_impl_paths != nullptr) {
-					const GDScriptParser::ClassNode* cls = parser.get_tree();
-					if (cls != nullptr && !cls->impls.is_empty()) {
-						r_impl_paths->push_back(script_path);
-					}
-				}
-			} else {
-			}
-		}
-		file_name = dir->get_next();
+	if (RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton()) {
+		index_service->forget_script(p_path);
 	}
 }
 
@@ -405,7 +280,6 @@ void GDScriptCache::add_global_trait(const StringName& p_trait_name, const Strin
 void GDScriptCache::remove_global_trait(const StringName& p_trait_name) {
 	MutexLock lock(singleton->mutex);
 	singleton->global_traits.erase(p_trait_name);
-	singleton->global_traits_project_scanned = false;
 }
 
 void GDScriptCache::remove_global_trait_by_path(const String& p_path) {
@@ -415,7 +289,6 @@ void GDScriptCache::remove_global_trait_by_path(const String& p_path) {
 		++next;
 		if (E->value == p_path) {
 			singleton->global_traits.remove(E);
-			singleton->global_traits_project_scanned = false;
 		}
 		E = next;
 	}
@@ -434,136 +307,118 @@ void GDScriptCache::get_global_trait_list(List<StringName>* r_traits) {
 }
 
 String GDScriptCache::get_global_trait_path(const StringName& p_trait_name) {
-	{
-		MutexLock lock(singleton->mutex);
-		const String* path = singleton->global_traits.getptr(p_trait_name);
-		if (path != nullptr) {
-			return *path;
-		}
-
-		if (singleton->global_traits_project_scanned) {
-			return String();
-		}
+	if (RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton()) {
+		index_service->ensure_populated();
+		Ref<RGIndex::ProgramIndex> snapshot = index_service->get_snapshot();
+		const RGIndex::ProgramIndex::TraitEntry* entry = snapshot->get_trait(p_trait_name);
+		return entry != nullptr ? entry->path : String();
 	}
 
-	///the fs normally populates this registry while the editor scans project
-	///files, but runtime parsing can hit this lookup before that has happened in this
-	///process. absolute cinema. do one lazy project scan on the first cache miss, 
-	///then subsequent misses stay O(1) instead of repeatedly walking the whole project
-	_scan_trait_scripts_in_dir("res://");
-
 	MutexLock lock(singleton->mutex);
-	singleton->global_traits_project_scanned = true;
 	const String* path = singleton->global_traits.getptr(p_trait_name);
 	return path != nullptr ? *path : String();
 }
 
-void GDScriptCache::add_global_impl_claims(const StringName& p_target_type_key, const StringName& p_trait_name, const HashMap<StringName, Ref<GDScriptTraitSignatureSnapshot>>& p_method_signatures, const String& p_path) {
-	if (p_target_type_key == StringName()) {
-		return; ///no key? more like no cross-file collision checks for this type kind! hah! hah...
-				///...yeah, i should take breaks more often...
-	}
-	MutexLock lock(singleton->mutex);
-	Vector<GlobalImplClaim>& claims = singleton->global_impls[p_target_type_key];
-	for (const KeyValue<StringName, Ref<GDScriptTraitSignatureSnapshot>>& E : p_method_signatures) {
-		GlobalImplClaim claim;
-		claim.trait_name = p_trait_name;
-		claim.method_name = E.key;
-		claim.owning_path = p_path;
-		claim.signature = E.value;
-		claims.push_back(claim);
-	}
-}
-
-void GDScriptCache::remove_global_impls_by_path(const String& p_path) {
-	MutexLock lock(singleton->mutex);
-	for (HashMap<StringName, Vector<GlobalImplClaim>>::Iterator E = singleton->global_impls.begin(); E;) {
-		HashMap<StringName, Vector<GlobalImplClaim>>::Iterator next = E;
-		++next;
-		Vector<GlobalImplClaim>& claims = E->value;
-		for (int i = claims.size() - 1; i >= 0; i--) {
-			if (claims[i].owning_path == p_path) {
-				claims.remove_at(i);
-			}
-		}
-		if (claims.is_empty()) {
-			singleton->global_impls.remove(E);
-		}
-		E = next;
-	}
-}
-
-Vector<GDScriptCache::GlobalImplClaim> GDScriptCache::get_global_impl_claims(const StringName& p_target_type_key) {
-	MutexLock lock(singleton->mutex);
-	const Vector<GlobalImplClaim>* claims = singleton->global_impls.getptr(p_target_type_key);
-	return claims != nullptr ? *claims : Vector<GlobalImplClaim>();
-}
-
-bool GDScriptCache::has_global_impl_method_claim(const StringName& p_target_type_key, const StringName& p_method_name) {
-	{
-		MutexLock lock(singleton->mutex);
-		const Vector<GlobalImplClaim>* claims = singleton->global_impls.getptr(p_target_type_key);
-		if (claims != nullptr) {
-			for (const GlobalImplClaim& claim : *claims) {
-				if (claim.method_name == p_method_name) {
-					return true;
-				}
-			}
-		}
-	}
-
-	ensure_global_impls_scanned();
-
-	MutexLock lock(singleton->mutex);
-	const Vector<GlobalImplClaim>* claims = singleton->global_impls.getptr(p_target_type_key);
-	if (claims == nullptr) {
-		return false;
-	}
-	for (const GlobalImplClaim& claim : *claims) {
-		if (claim.method_name == p_method_name) {
-			return true;
-		}
-	}
-	return false;
-}
-
-void GDScriptCache::ensure_global_impls_scanned() {
-	if (singleton->global_impls_project_scanned.is_set()) {
+static void _ensure_impl_providers_loaded_impl(int p_mode, const StringName& p_class, Variant::Type p_type) {
+	RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton();
+	if (index_service == nullptr) {
 		return;
 	}
 
-	{
-		MutexLock lock(singleton->mutex);
-		if (singleton->global_impls_project_scanned.is_set() || singleton->global_impls_project_scanning) {
+	index_service->ensure_populated();
+	Ref<RGIndex::ProgramIndex> snapshot = index_service->get_snapshot();
+	if (snapshot.is_null()) {
+		return;
+	}
+
+	HashSet<StringName> native_chain;
+	if (p_mode == 0) {
+		for (StringName c = p_class; c != StringName(); c = ClassDB::get_parent_class(c)) {
+			native_chain.insert(c);
+		}
+	}
+
+	Vector<String> paths;
+	HashSet<String> seen;
+	for (const KeyValue<RGIndex::TypeKey, Vector<RGIndex::ProgramIndex::ImplEntry>>& T : snapshot->get_impls()) {
+		const RGIndex::TypeKey& key = T.key;
+
+		///how it feels to be too lazy to make an enum lowk
+		const bool matches =
+				(p_mode == 0 && key.kind == RGIndex::TypeKey::NATIVE && native_chain.has(key.name)) ||
+				(p_mode == 1 && key.kind == RGIndex::TypeKey::BUILTIN && key.id == (uint32_t)p_type) ||
+				(p_mode == 2 && key.kind == RGIndex::TypeKey::ENUM);
+		
+		if (!matches) {
+			continue;
+		}
+		for (const RGIndex::ProgramIndex::ImplEntry& entry : T.value) {
+			if (!seen.has(entry.owning_path)) {
+				seen.insert(entry.owning_path);
+				paths.push_back(entry.owning_path);
+			}
+		}
+	}
+	paths.sort();
+
+	for (const String& raw_path : paths) {
+		const String path = raw_path.begins_with("res://") ? raw_path : ProjectSettings::get_singleton()->localize_path(raw_path);
+		if (GDScriptCache::get_cached_script(path).is_valid()) {
+			continue; ///do NOT fucking reload
+		}
+		Error err = OK;
+		Ref<GDScript> script = GDScriptCache::get_full_script(path, err, String(), /*p_update_from_disk=*/true);
+	}
+}
+
+static void _ensure_impl_providers_loaded(int p_mode, const StringName& p_class, Variant::Type p_type) {
+	static Mutex ensured_mutex;
+	static HashSet<String> ensured_native_classes;     ///0
+	static SafeNumeric<uint64_t> ensured_builtin_mask; ///1
+	static SafeFlag ensured_enums;                     ///2
+
+	static_assert(Variant::VARIANT_MAX <= 64, "ensured_builtin_mask needs one bit per Variant::Type");
+
+	if (p_mode == 0) {
+		MutexLock lock(ensured_mutex);
+		if (ensured_native_classes.has(String(p_class))) {
 			return;
 		}
-		singleton->global_impls_project_scanning = true;
-	}
-
-	Vector<String> impl_only_paths;
-	_scan_trait_scripts_in_dir("res://", &impl_only_paths);
-
-	Vector<String> trait_paths;
-	{
-		MutexLock lock(singleton->mutex);
-		for (const KeyValue<StringName, String>& E : singleton->global_traits) {
-			trait_paths.push_back(E.value);
+	} else if (p_mode == 1) {
+		if ((ensured_builtin_mask.get() >> (uint32_t)p_type) & 1ULL) {
+			return;
 		}
+	} else if (ensured_enums.is_set()) {
+		return;
 	}
 
-	for (const String& path : trait_paths) {
-		Error err = OK;
-		Ref<GDScript> script = get_full_script(path, err, String(), /*p_update_from_disk=*/true);
+	_ensure_impl_providers_loaded_impl(p_mode, p_class, p_type);
+
+	RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton();
+	if (index_service == nullptr || !index_service->is_populated()) {
+		return;
 	}
 
-	for (const String& path : impl_only_paths) {
-		Error err = OK;
-		Ref<GDScript> script = get_full_script(path, err, String(), /*p_update_from_disk=*/true);
+	MutexLock lock(ensured_mutex);
+	if (p_mode == 0) {
+		ensured_native_classes.insert(String(p_class));
+	} else if (p_mode == 1) {
+		ensured_builtin_mask.set(ensured_builtin_mask.get() | (1ULL << (uint32_t)p_type));
+	} else {
+		ensured_enums.set();
 	}
+}
 
-	MutexLock lock(singleton->mutex);
-	singleton->global_impls_project_scanned.set();
-	singleton->global_impls_project_scanning = false;
+void GDScriptCache::ensure_impl_providers_loaded_for_native_class(const StringName& p_class) {
+	_ensure_impl_providers_loaded(0, p_class, Variant::NIL);
+}
+
+void GDScriptCache::ensure_impl_providers_loaded_for_builtin(Variant::Type p_type) {
+	_ensure_impl_providers_loaded(1, StringName(), p_type);
+}
+
+void GDScriptCache::ensure_impl_providers_loaded_for_enums() {
+	_ensure_impl_providers_loaded(2, StringName(), Variant::NIL);
 }
 
 Ref<GDScriptParserRef> GDScriptCache::get_parser(const String &p_path, GDScriptParserRef::Status p_status, Error &r_error, const String &p_owner) {
@@ -856,185 +711,6 @@ void GDScriptCache::remove_static_script(const String &p_fqcn) {
 	singleton->static_gdscript_cache.erase(p_fqcn);
 }
 
-///inline safety subclass graph stuff
-
-void GDScriptCache::register_subclass_edge(const StringName& p_base_fqcn, const String& p_base_path, const StringName& p_subclass_fqcn, const String& p_subclass_path) {
-	if (singleton == nullptr || p_base_fqcn == StringName() || p_subclass_fqcn == StringName()) {
-		return;
-	}
-
-	///HEADS UP!! the incredibly convenient command `--test gdscript-compiler <path>` 
-	///skips normal path resolution entirely, so a file compiled that way can some-fucking-how 
-	///end up with two distinct graph entries for what's really one class (one res://-spelled, one not) 
-	///it doesn't happen in the editor/normal game compiles...?
-	///i don't know why, but for that reason alone i can't be assed to fix that issue
-	String base_path = ProjectSettings::get_singleton()->localize_path(p_base_path);
-	String subclass_path = ProjectSettings::get_singleton()->localize_path(p_subclass_path);
-
-	MutexLock lock(singleton->mutex);
-
-	if (singleton->cleared) {
-		return;
-	}
-
-	singleton->direct_subclasses_by_fqcn[p_base_fqcn].insert(p_subclass_fqcn);
-
-	if (!singleton->fqcn_owning_path.has(p_base_fqcn)) {
-		singleton->fqcn_owning_path[p_base_fqcn] = base_path;
-	}
-	if (!singleton->fqcn_owning_path.has(p_subclass_fqcn)) {
-		singleton->fqcn_owning_path[p_subclass_fqcn] = subclass_path;
-	}
-}
-
-String GDScriptCache::get_owning_path_for_fqcn(const StringName& p_fqcn) {
-	if (singleton == nullptr) {
-		return String();
-	}
-
-	MutexLock lock(singleton->mutex);
-
-	const HashMap<StringName, String>::ConstIterator found = singleton->fqcn_owning_path.find(p_fqcn);
-	if (!found) {
-		return String();
-	}
-	return found->value;
-}
-
-bool GDScriptCache::is_fqcn_reachable_subclass(const StringName& p_ancestor_fqcn, const StringName& p_fqcn) {
-	if (singleton == nullptr) {
-		return false;
-	}
-
-	MutexLock lock(singleton->mutex);
-
-	if (p_ancestor_fqcn == p_fqcn) {
-		return true;
-	}
-
-	///inheritance cycles SHOULD get rejected before base_type is ever committed
-	///so this shouldn't need the visited guard, but better safe than sorry i suppose
-	HashSet<StringName> visited;
-	List<StringName> frontier;
-	frontier.push_back(p_ancestor_fqcn);
-	visited.insert(p_ancestor_fqcn);
-
-	while (!frontier.is_empty()) {
-		StringName current = frontier.front()->get();
-		frontier.pop_front();
-
-		const HashMap<StringName, HashSet<StringName>>::Iterator found = singleton->direct_subclasses_by_fqcn.find(current);
-		if (!found) {
-			continue;
-		}
-		for (const StringName& child : found->value) {
-			if (child == p_fqcn) {
-				return true;
-			}
-			if (!visited.has(child)) {
-				visited.insert(child);
-				frontier.push_back(child);
-			}
-		}
-	}
-
-	return false;
-}
-
-Vector<StringName> GDScriptCache::get_all_reachable_subclasses(const StringName& p_base_fqcn) {
-	Vector<StringName> result;
-	if (singleton == nullptr) {
-		return result;
-	}
-
-	MutexLock lock(singleton->mutex);
-	HashSet<StringName> visited;
-	List<StringName> frontier;
-	frontier.push_back(p_base_fqcn);
-	visited.insert(p_base_fqcn);
-
-	while (!frontier.is_empty()) {
-		StringName current = frontier.front()->get();
-		frontier.pop_front();
-
-		const HashMap<StringName, HashSet<StringName>>::Iterator found = singleton->direct_subclasses_by_fqcn.find(current);
-		if (!found) {
-			continue;
-		}
-		for (const StringName& child : found->value) {
-			if (!visited.has(child)) {
-				visited.insert(child);
-				frontier.push_back(child);
-				result.push_back(child);
-			}
-		}
-	}
-
-	return result;
-}
-
-void GDScriptCache::register_inline_assumption(const StringName& p_assumed_base_fqcn, const String& p_dependent_path) {
-	if (singleton == nullptr || p_assumed_base_fqcn == StringName() || p_dependent_path.is_empty()) {
-		return;
-	}
-
-	MutexLock lock(singleton->mutex);
-
-	if (singleton->cleared) {
-		return;
-	}
-
-	singleton->inline_assumption_dependents[p_assumed_base_fqcn].insert(p_dependent_path);
-}
-
-Vector<String> GDScriptCache::get_paths_invalidated_by_new_subclass(const StringName& p_base_fqcn) {
-	Vector<String> result;
-	if (singleton == nullptr) {
-		return result;
-	}
-
-	MutexLock lock(singleton->mutex);
-
-	if (singleton->cleared) {
-		return result;
-	}
-
-	///heads up!!! this is O(classes), but i think it's fine, because it should only really trigger
-	///on loads/reloads
-	HashSet<StringName> ancestors_and_self;
-	ancestors_and_self.insert(p_base_fqcn);
-	{
-		List<StringName> frontier;
-		frontier.push_back(p_base_fqcn);
-		while (!frontier.is_empty()) {
-			StringName current = frontier.front()->get();
-			frontier.pop_front();
-			for (const KeyValue<StringName, HashSet<StringName>>& E : singleton->direct_subclasses_by_fqcn) {
-				if (E.value.has(current) && !ancestors_and_self.has(E.key)) {
-					ancestors_and_self.insert(E.key);
-					frontier.push_back(E.key);
-				}
-			}
-		}
-	}
-
-	HashSet<String> seen_paths;
-	for (const StringName& fqcn : ancestors_and_self) {
-		const HashMap<StringName, HashSet<String>>::Iterator found = singleton->inline_assumption_dependents.find(fqcn);
-		if (!found) {
-			continue;
-		}
-		for (const String& dependent_path : found->value) {
-			if (!seen_paths.has(dependent_path)) {
-				seen_paths.insert(dependent_path);
-				result.push_back(dependent_path);
-			}
-		}
-	}
-
-	return result;
-}
-
 void GDScriptCache::clear() {
 	if (singleton == nullptr) {
 		return;
@@ -1078,15 +754,6 @@ void GDScriptCache::clear() {
 	singleton->full_gdscript_cache.clear();
 	singleton->static_gdscript_cache.clear();
 	singleton->global_traits.clear();
-	singleton->global_traits_project_scanned = false;
-	singleton->global_impls.clear();
-	singleton->global_impls_project_scanned.clear();
-	singleton->global_impls_project_scanning = false;
-	singleton->direct_subclasses_by_fqcn.clear();
-	singleton->fqcn_owning_path.clear();
-	singleton->inline_assumption_dependents.clear();
-	singleton->subclass_graph_project_scanned.clear();
-	singleton->subclass_graph_project_scanning = false;
 }
 
 GDScriptCache::GDScriptCache() {

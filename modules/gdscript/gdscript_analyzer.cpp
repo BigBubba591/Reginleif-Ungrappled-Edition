@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "gdscript_analyzer.h"
+#include "program_index_gd.h"
 
 #include "gdscript.h"
 #include "gdscript_cache.h"
@@ -104,7 +105,7 @@ static MethodInfo method_info_from_trait_signature(const StringName& p_name, con
 		return method_info;
 	}
 	method_info.flags = p_signature->is_vararg ? METHOD_FLAG_VARARG : METHOD_FLAGS_DEFAULT;
-	for (int i = 0; i < p_signature->param_types.size(); i++) {
+	for (int i = 0; i < p_signature->param_names.size(); i++) {
 		PropertyInfo arg_info;
 		arg_info.name = i < p_signature->param_names.size() ? p_signature->param_names[i] : StringName();
 		method_info.arguments.push_back(arg_info);
@@ -302,129 +303,74 @@ static GDScriptParser::DataType make_builtin_meta_type(Variant::Type p_type) {
 	return type;
 }
 
-static StringName impl_target_key_from_datatype(const GDScriptParser::DataType& p_type) {
-	if (p_type.kind == GDScriptParser::DataType::BUILTIN) {
-		return StringName("builtin::" + itos((int)p_type.builtin_type));
-	}
-	if (p_type.kind == GDScriptParser::DataType::NATIVE) {
-		return StringName("native::" + String(p_type.native_type));
-	}
-	if (p_type.kind == GDScriptParser::DataType::CLASS && p_type.class_type != nullptr) {
-		return StringName("class::" + p_type.class_type->fqcn);
-	}
-	if (p_type.kind == GDScriptParser::DataType::ENUM) {
-		return StringName("enum::" + String(p_type.native_type));
-	}
-	return StringName();
-}
 
 static bool global_impl_claims_satisfy_trait_for_type(const GDScriptParser::DataType& p_type, const StringName& p_trait_name) {
-	GDScriptCache::ensure_global_impls_scanned();
-
-	GDScriptParser::DataType walk_type = p_type;
-	while (true) {
-		StringName walk_key = impl_target_key_from_datatype(walk_type);
-		if (walk_key != StringName()) {
-			Vector<GDScriptCache::GlobalImplClaim> claims = GDScriptCache::get_global_impl_claims(walk_key);
-			for (const GDScriptCache::GlobalImplClaim& claim : claims) {
-				if (claim.trait_name == p_trait_name) {
-					return true;
-				}
-			}
-		}
-
-		if (walk_type.kind == GDScriptParser::DataType::CLASS && walk_type.class_type != nullptr) {
-			GDScriptParser::DataType next_walk = walk_type.class_type->base_type;
-			if (next_walk.kind == GDScriptParser::DataType::UNRESOLVED) {
-				break;
-			}
-			walk_type = next_walk;
-			continue;
-		}
-
-		if (walk_type.kind == GDScriptParser::DataType::NATIVE && walk_type.native_type != StringName()) {
-			StringName parent_native = ClassDB::get_parent_class(walk_type.native_type);
-			if (parent_native == StringName()) {
-				break;
-			}
-			GDScriptParser::DataType native_walk;
-			native_walk.kind = GDScriptParser::DataType::NATIVE;
-			native_walk.builtin_type = Variant::OBJECT;
-			native_walk.native_type = parent_native;
-			walk_type = native_walk;
-			continue;
-		}
-
-		break;
+	RGIndex::ProgramIndexService* svc = RGIndex::ProgramIndexService::get_singleton();
+	const RGIndex::TypeKey key = RGIndex::type_key_from_datatype(p_type);
+	if (svc != nullptr && svc->is_populated() && key.is_valid()) {
+		RGIndex::IndexView view(svc->get_snapshot(), nullptr);
+		return view.implements(key, p_trait_name);
 	}
-
-	return false;
-}
-
-///a CLASS-kind base (a user script) can match a global impl claim two different ways...
-///case 1, an impl targeting the script class itself (`impl for Bumfuck`), or an impl targeting one
-///of its native ancestors (`impl for Node`, reachable since Bumfuck extends Node2D extends
-/// ... extends Node). yippee. impl_target_key_from_datatype() only ever produces one or the other
-///key, so this checks every key a CLASS type could plausibly match against
-static bool get_global_impl_method_claim_for_key(const StringName& p_target_type_key, const StringName& p_method_name, GDScriptCache::GlobalImplClaim* r_claim = nullptr) {
-	if (p_target_type_key == StringName()) {
-		return false;
-	}
-	Vector<GDScriptCache::GlobalImplClaim> claims = GDScriptCache::get_global_impl_claims(p_target_type_key);
-	for (const GDScriptCache::GlobalImplClaim& claim : claims) {
-		if (claim.method_name == p_method_name) {
-			if (r_claim != nullptr) {
-				*r_claim = claim;
-			}
-			return true;
-		}
-	}
-	return false;
-}
-
-static bool get_global_impl_method_claim_for_native_chain(StringName p_native_type, const StringName& p_method_name, GDScriptCache::GlobalImplClaim* r_claim = nullptr) {
-	while (p_native_type != StringName()) {
-		StringName native_key = StringName("native::" + String(p_native_type));
-		if (get_global_impl_method_claim_for_key(native_key, p_method_name, r_claim)) {
-			return true;
-		}
-		p_native_type = ClassDB::get_parent_class(p_native_type);
-	}
-	return false;
+	return false; ///no index or no key
 }
 
 static bool get_global_impl_method_claim_for_type(const GDScriptParser::DataType& p_type, const StringName& p_method_name, GDScriptCache::GlobalImplClaim* r_claim = nullptr) {
-	GDScriptCache::ensure_global_impls_scanned();
-	StringName direct_key = impl_target_key_from_datatype(p_type);
-	if (get_global_impl_method_claim_for_key(direct_key, p_method_name, r_claim)) {
+	RGIndex::ProgramIndexService* svc = RGIndex::ProgramIndexService::get_singleton();
+	const RGIndex::TypeKey key = RGIndex::type_key_from_datatype(p_type);
+	if (svc != nullptr && svc->is_populated() && key.is_valid()) {
+		RGIndex::IndexView view(svc->get_snapshot(), nullptr);
+		const RGIndex::ImplHit hit = view.find_impl_method(key, p_method_name);
+		if (!hit.found) {
+			return false;
+		}
+		if (r_claim != nullptr) {
+			r_claim->trait_name = hit.trait_name;
+			r_claim->method_name = p_method_name;
+			r_claim->owning_path = hit.owning_path;
+			r_claim->signature = Ref<GDScriptTraitSignatureSnapshot>();
+		}
 		return true;
 	}
-
-	if (p_type.kind == GDScriptParser::DataType::NATIVE) {
-		return get_global_impl_method_claim_for_native_chain(ClassDB::get_parent_class(p_type.native_type), p_method_name, r_claim);
-	}
-
-	if (p_type.kind == GDScriptParser::DataType::CLASS) {
-		GDScriptParser::ClassNode* current = p_type.class_type;
-		while (current != nullptr && current->base_type.kind == GDScriptParser::DataType::CLASS) {
-			current = current->base_type.class_type;
-			if (current != nullptr) {
-				StringName script_key = StringName("class::" + current->fqcn);
-				if (get_global_impl_method_claim_for_key(script_key, p_method_name, r_claim)) {
-					return true;
-				}
-			}
-		}
-		if (current != nullptr && current->base_type.kind == GDScriptParser::DataType::NATIVE) {
-			return get_global_impl_method_claim_for_native_chain(current->base_type.native_type, p_method_name, r_claim);
-		}
-	}
-
 	return false;
 }
 
 static bool has_global_impl_method_claim_for_type(const GDScriptParser::DataType& p_type, const StringName& p_method_name) {
 	return get_global_impl_method_claim_for_type(p_type, p_method_name);
+}
+
+static String get_enum_impl_hint_for_method(const StringName& p_method_name) {
+	RGIndex::ProgramIndexService* svc = RGIndex::ProgramIndexService::get_singleton();
+	if (svc == nullptr || !svc->is_populated()) {
+		return String();
+	}
+	Ref<RGIndex::ProgramIndex> snapshot = svc->get_snapshot();
+	if (snapshot.is_null()) {
+		return String();
+	}
+
+	String best;
+	for (const KeyValue<RGIndex::TypeKey, Vector<RGIndex::ProgramIndex::ImplEntry>>& kv : snapshot->get_impls()) {
+		if (kv.key.kind != RGIndex::TypeKey::ENUM) {
+			continue;
+		}
+		for (const RGIndex::ProgramIndex::ImplEntry& entry : kv.value) {
+			if (!entry.provided.has(p_method_name)) {
+				continue;
+			}
+			String enum_name = kv.key.name;
+			const int dot = enum_name.rfind(".");
+			if (dot >= 0) {
+				enum_name = enum_name.substr(dot + 1);
+			}
+			if (best.is_empty() || enum_name < best) {
+			}
+			break;
+		}
+	}
+	if (best.is_empty()) {
+		return String();
+	}
+	return vformat(R"( Note: %s() is an impl method on enum %s, but the enum type of this value is not known here. Consider typing the variable as %s, or cast it with 'as %s'.)", p_method_name, best, best, best);
 }
 
 /// [Monarch] Reginleif addition. Substitutes GENERIC_TYPE placeholders with concrete types wherever possible 
@@ -1285,12 +1231,6 @@ Error GDScriptAnalyzer::resolve_class_inheritance(GDScriptParser::ClassNode *p_c
 	p_class->base_type = result;
 	class_type.native_type = result.native_type;
 	p_class->self_type = class_type;
-
-	if (result.kind == GDScriptParser::DataType::CLASS && result.class_type != nullptr) {
-		GDScriptCache::register_subclass_edge(
-				result.class_type->fqcn, result.class_type->self_type.script_path,
-				p_class->fqcn, parser->script_path);
-	}
 
 	// Apply annotations.
 	for (GDScriptParser::AnnotationNode *&E : p_class->annotations) {
@@ -5439,11 +5379,11 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 		if (local_impl_signature.is_valid()) {
 			found = true;
 			List<GDScriptParser::DataType> impl_par_types;
-			for (const GDScriptParser::DataType& param_type : local_impl_signature->param_types) {
+			for (const GDScriptParser::DataType& param_type : local_impl_signature->get_param_types(parser)) {
 				impl_par_types.push_back(param_type);
 			}
 			validate_call_arg(impl_par_types, local_impl_signature->default_arg_count, local_impl_signature->is_vararg, p_call);
-			call_type = local_impl_signature->return_type;
+			call_type = local_impl_signature->get_return_type(parser);
 			if (!p_is_root && !p_is_await && call_type.is_hard_type() && call_type.kind == GDScriptParser::DataType::BUILTIN && call_type.builtin_type == Variant::NIL) {
 				push_error(vformat(R"*(Cannot get return value of call to "%s()" because it returns "void".)*", p_call->function_name), p_call);
 			}
@@ -5452,11 +5392,11 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 			if (trait_bound_signature.is_valid()) {
 				found = true;
 				List<GDScriptParser::DataType> trait_par_types;
-				for (const GDScriptParser::DataType& param_type : trait_bound_signature->param_types) {
+				for (const GDScriptParser::DataType& param_type : trait_bound_signature->get_param_types(parser)) {
 					trait_par_types.push_back(param_type);
 				}
 				validate_call_arg(trait_par_types, trait_bound_signature->default_arg_count, trait_bound_signature->is_vararg, p_call);
-				call_type = trait_bound_signature->return_type;
+				call_type = trait_bound_signature->get_return_type(parser);
 				if (!p_is_root && !p_is_await && call_type.is_hard_type() && call_type.kind == GDScriptParser::DataType::BUILTIN && call_type.builtin_type == Variant::NIL) {
 					push_error(vformat(R"*(Cannot get return value of call to "%s()" because it returns "void".)*", p_call->function_name), p_call);
 				}
@@ -5483,11 +5423,11 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 				}
 				if (signature.is_valid()) {
 					List<GDScriptParser::DataType> impl_par_types;
-					for (const GDScriptParser::DataType& param_type : signature->param_types) {
+					for (const GDScriptParser::DataType& param_type : signature->get_param_types(parser)) {
 						impl_par_types.push_back(param_type);
 					}
 					validate_call_arg(impl_par_types, signature->default_arg_count, signature->is_vararg, p_call);
-					call_type = signature->return_type;
+					call_type = signature->get_return_type(parser);
 					if (!p_is_root && !p_is_await && call_type.is_hard_type() && call_type.kind == GDScriptParser::DataType::BUILTIN && call_type.builtin_type == Variant::NIL) {
 						push_error(vformat(R"*(Cannot get return value of call to "%s()" because it returns "void".)*", p_call->function_name), p_call);
 					}
@@ -5555,11 +5495,11 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 						const Ref<GDScriptTraitSignatureSnapshot>* sig = self_trait->required_signatures.getptr(p_call->function_name);
 						if (sig != nullptr && sig->is_valid()) {
 							List<GDScriptParser::DataType> par_types;
-							for (const GDScriptParser::DataType& pt : (*sig)->param_types) {
+							for (const GDScriptParser::DataType& pt : (*sig)->get_param_types(parser)) {
 								par_types.push_back(pt);
 							}
 							validate_call_arg(par_types, (*sig)->default_arg_count, (*sig)->is_vararg, p_call);
-							call_type = (*sig)->return_type;
+							call_type = (*sig)->get_return_type(parser);
 						}
 					}
 				}
@@ -5568,6 +5508,10 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 
 		if (!found && (is_self || (base_type.is_hard_type() && base_type.kind == GDScriptParser::DataType::BUILTIN))) {
 			String base_name = is_self && !p_call->is_super ? "self" : base_type.to_string();
+			String enum_hint;
+			if (!is_self && base_type.kind == GDScriptParser::DataType::BUILTIN && base_type.builtin_type == Variant::INT) {
+				enum_hint = get_enum_impl_hint_for_method(p_call->function_name);
+			}
 #ifdef SUGGEST_GODOT4_RENAMES
 			String rename_hint;
 			if (GLOBAL_GET_CACHED(bool, "debug/gdscript/warnings/renamed_in_godot_4_hint")) {
@@ -5576,9 +5520,9 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 					rename_hint = " " + vformat(R"(Did you mean to use "%s"?)", String(renamed_function_name) + "()");
 				}
 			}
-			push_error(vformat(R"*(Function "%s()" not found in base %s.%s)*", p_call->function_name, base_name, rename_hint), p_call->is_super ? p_call : p_call->callee);
+			push_error(vformat(R"*(Function "%s()" not found in base %s.%s)*", p_call->function_name, base_name, rename_hint) + enum_hint, p_call->is_super ? p_call : p_call->callee);
 #else
-			push_error(vformat(R"*(Function "%s()" not found in base %s.)*", p_call->function_name, base_name), p_call->is_super ? p_call : p_call->callee);
+			push_error(vformat(R"*(Function "%s()" not found in base %s.)*", p_call->function_name, base_name) + enum_hint, p_call->is_super ? p_call : p_call->callee);
 #endif // SUGGEST_GODOT4_RENAMES
 		} else if (!found && (!p_call->is_super && base_type.is_hard_type() && base_type.is_meta_type)) {
 			push_error(vformat(R"*(Static function "%s()" not found in base "%s".)*", p_call->function_name, base_type.to_string()), p_call);

@@ -34,6 +34,7 @@
 #include "gdscript_helper.h"
 #include "gdscript_impl_callable.h"
 #include "gdscript_lambda_callable.h"
+#include "program_index.h"
 
 #include "core/object/class_db.h"
 #include "core/os/os.h"
@@ -41,41 +42,41 @@
 #include "core/variant/container_type_validate.h"
 
 static bool _gdscript_value_satisfies_trait(const Variant& p_value, const StringName& p_trait_name) {
-	GDScriptCache::ensure_global_impls_scanned();
-
-	Vector<StringName> keys;
-	if (p_value.get_type() == Variant::OBJECT) {
-		bool was_freed = false;
-		Object *object = p_value.get_validated_object_with_check(was_freed);
-		if (was_freed || object == nullptr) {
-			return false;
-		}
-
-		if (object->get_script_instance()) {
-			Script* script = object->get_script_instance()->get_script();
-			while (script != nullptr) {
-				GDScript* gdscript = Object::cast_to<GDScript>(script);
-				if (gdscript != nullptr && !gdscript->get_fully_qualified_name().is_empty()) {
-					keys.push_back(StringName("class::" + gdscript->get_fully_qualified_name()));
+	if (RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton()) {
+		index_service->ensure_populated();
+		Ref<RGIndex::ProgramIndex> snapshot = index_service->get_snapshot();
+		if (snapshot.is_valid()) {
+			RGIndex::IndexView view(snapshot, nullptr);
+			if (p_value.get_type() == Variant::OBJECT) {
+				bool was_freed = false;
+				Object* object = p_value.get_validated_object_with_check(was_freed);
+				if (was_freed || object == nullptr) {
+					return false;
 				}
-				script = script->get_base_script().ptr();
+				if (object->get_script_instance()) {
+					Script* script = object->get_script_instance()->get_script();
+					while (script != nullptr) {
+						GDScript* gdscript = Object::cast_to<GDScript>(script);
+						if (gdscript != nullptr) {
+							StringName class_key = snapshot->resolve_class_key(StringName(gdscript->get_fully_qualified_name()));
+							if (class_key == StringName()) {
+								class_key = snapshot->resolve_class_key(StringName(RGIndex::canonical_path(gdscript->get_script_path())));
+							}
+							if (class_key != StringName() && view.implements(RGIndex::TypeKey::script_class(class_key), p_trait_name)) {
+								return true;
+							}
+						}
+						script = script->get_base_script().ptr();
+					}
+				}
+				for (StringName native = object->get_class_name(); native != StringName(); native = ClassDB::get_parent_class(native)) {
+					if (view.implements(RGIndex::TypeKey::native(native), p_trait_name)) {
+						return true;
+					}
+				}
+				return false;
 			}
-		}
-
-		StringName native = object->get_class_name();
-		while (native != StringName()) {
-			keys.push_back(StringName("native::" + String(native)));
-			native = ClassDB::get_parent_class(native);
-		}
-	} else {
-		keys.push_back(StringName("builtin::" + itos((int)p_value.get_type())));
-	}
-
-	for (const StringName& key : keys) {
-		for (const GDScriptCache::GlobalImplClaim& claim : GDScriptCache::get_global_impl_claims(key)) {
-			if (claim.trait_name == p_trait_name) {
-				return true;
-			}
+			return view.implements(RGIndex::TypeKey::builtin(p_value.get_type()), p_trait_name);
 		}
 	}
 
@@ -2451,13 +2452,13 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 
 				GDScriptFunction* native_impl_function = nullptr;
 				if (base_type != Variant::OBJECT && !Variant::has_builtin_method(base_type, *methodname)) {
-					GDScriptCache::ensure_global_impls_scanned();
+					GDScriptCache::ensure_impl_providers_loaded_for_builtin(base_type);
 					native_impl_function = GDScriptLanguage::get_singleton()->get_native_impl_method(base_type, *methodname);
 				} else if (base_type == Variant::OBJECT) {
 					bool was_freed = false;
 					Object* obj = base->get_validated_object_with_check(was_freed);
 					if (obj != nullptr && !was_freed && !ClassDB::has_method(obj->get_class_name(), *methodname, false)) {
-						GDScriptCache::ensure_global_impls_scanned();
+						GDScriptCache::ensure_impl_providers_loaded_for_native_class(obj->get_class_name());
 						///check whether some `impl for native` up the inheritance chain provides it...
 						///the walk itself is memoised per (class, method), so repeated calls don't rewalk the entire fucking
 						///ClassDB::get_parent_class type tree every time you need to peek into an impl method 

@@ -31,6 +31,7 @@
 #include "gdscript.h"
 #include "gdscript_analyzer.h"
 #include "gdscript_linter.h"
+#include "program_index_gd.h"
 #include "gdscript_parser.h"
 #include "gdscript_tokenizer.h"
 #include "gdscript_utility_functions.h"
@@ -1276,7 +1277,9 @@ static void _add_trait_method_completion_from_snapshot(const StringName& p_metho
 
 	String method_hint = p_method_name;
 	method_hint += "(";
-	for (int i = 0; i < p_snapshot->param_types.size(); i++) {
+	const Vector<GDScriptParser::DataType> snapshot_param_types = p_snapshot->get_param_types(nullptr);
+	const GDScriptParser::DataType snapshot_return_type = p_snapshot->get_return_type(nullptr);
+	for (int i = 0; i < snapshot_param_types.size(); i++) {
 		if (i > 0) {
 			method_hint += ", ";
 		}
@@ -1285,12 +1288,12 @@ static void _add_trait_method_completion_from_snapshot(const StringName& p_metho
 		} else {
 			method_hint += "arg" + itos(i);
 		}
-		if (p_type_hints && p_snapshot->param_types[i].is_hard_type()) {
-			method_hint += ": " + p_snapshot->param_types[i].to_string();
+		if (p_type_hints && snapshot_param_types[i].is_hard_type()) {
+			method_hint += ": " + snapshot_param_types[i].to_string();
 		}
 	}
 	if (p_snapshot->is_vararg) {
-		if (!p_snapshot->param_types.is_empty()) {
+		if (!snapshot_param_types.is_empty()) {
 			method_hint += ", ";
 		}
 		method_hint += "...args";
@@ -1299,11 +1302,11 @@ static void _add_trait_method_completion_from_snapshot(const StringName& p_metho
 		}
 	}
 	method_hint += ")";
-	if (p_type_hints && p_snapshot->return_type.is_hard_type()) {
-		if (p_snapshot->return_type.kind == GDScriptParser::DataType::BUILTIN && p_snapshot->return_type.builtin_type == Variant::NIL) {
+	if (p_type_hints && snapshot_return_type.is_hard_type()) {
+		if (snapshot_return_type.kind == GDScriptParser::DataType::BUILTIN && snapshot_return_type.builtin_type == Variant::NIL) {
 			method_hint += " -> void";
 		} else {
-			method_hint += " -> " + p_snapshot->return_type.to_string();
+			method_hint += " -> " + snapshot_return_type.to_string();
 		}
 	}
 	method_hint += ":";
@@ -1542,22 +1545,6 @@ static void _find_identifiers_in_class(const GDScriptParser::ClassNode *p_class,
 	_find_identifiers_in_base(base_type, p_only_functions, p_types_only, p_add_braces, r_result, p_recursion_depth + 1, nullptr);
 }
 
-static StringName _get_trait_impl_target_key_for_completion(const GDScriptParser::DataType& p_type) {
-	if (p_type.kind == GDScriptParser::DataType::BUILTIN) {
-		return StringName("builtin::" + itos((int)p_type.builtin_type));
-	}
-	if (p_type.kind == GDScriptParser::DataType::NATIVE) {
-		return StringName("native::" + String(p_type.native_type));
-	}
-	if (p_type.kind == GDScriptParser::DataType::CLASS && p_type.class_type != nullptr) {
-		return StringName("class::" + p_type.class_type->fqcn);
-	}
-	if (p_type.kind == GDScriptParser::DataType::ENUM) {
-		return StringName("enum::" + String(p_type.native_type));
-	}
-	return StringName();
-}
-
 static void _add_trait_attribute_method_completion(const StringName& p_method_name, const Ref<GDScriptTraitSignatureSnapshot>& p_signature, bool p_add_braces, int p_location, HashMap<String, EditorLanguage::CompletionOption>& r_result) {
 	if (r_result.has(p_method_name)) {
 		return;
@@ -1565,7 +1552,7 @@ static void _add_trait_attribute_method_completion(const StringName& p_method_na
 
 	EditorLanguage::CompletionOption option(p_method_name, EditorLanguage::CompletionKind::FUNCTION, p_location);
 	if (p_add_braces) {
-		if (p_signature.is_valid() && (!p_signature->param_types.is_empty() || p_signature->is_vararg)) {
+		if (p_signature.is_valid() && (!p_signature->param_names.is_empty() || p_signature->is_vararg)) {
 			option.insert_text += "(";
 			option.display += U"(\u2026)";
 		} else {
@@ -1682,16 +1669,48 @@ static void _find_trait_attribute_methods_in_base(const GDScriptParser::DataType
 		}
 	}
 
-	GDScriptCache::ensure_global_impls_scanned();
+	switch (p_base_type.kind) {
+		case GDScriptParser::DataType::BUILTIN: {
+			GDScriptCache::ensure_impl_providers_loaded_for_builtin(p_base_type.builtin_type);
+		} break;
+		case GDScriptParser::DataType::NATIVE: {
+			GDScriptCache::ensure_impl_providers_loaded_for_native_class(p_base_type.native_type);
+		} break;
+		case GDScriptParser::DataType::CLASS: {
+			const GDScriptParser::ClassNode* root = p_base_type.class_type;
+			while (root != nullptr && root->base_type.kind == GDScriptParser::DataType::CLASS) {
+				root = root->base_type.class_type;
+			}
+			if (root != nullptr && root->base_type.kind == GDScriptParser::DataType::NATIVE) {
+				GDScriptCache::ensure_impl_providers_loaded_for_native_class(root->base_type.native_type);
+			}
+		} break;
+		case GDScriptParser::DataType::ENUM: {
+			GDScriptCache::ensure_impl_providers_loaded_for_enums();
+		} break;
+		default:
+			break;
+	}
+	
 	GDScriptParser::DataType walk_type = p_base_type;
 	while (true) {
-		StringName walk_key = _get_trait_impl_target_key_for_completion(walk_type);
-		if (walk_key != StringName()) {
-			for (const GDScriptCache::GlobalImplClaim& claim : GDScriptCache::get_global_impl_claims(walk_key)) {
-				_add_trait_attribute_method_completion(claim.method_name, claim.signature, p_add_braces, p_recursion_depth + EditorLanguage::CompletionLocation::OTHER_USER_CODE, r_result);
+		const RGIndex::TypeKey walk_key = RGIndex::type_key_from_datatype(walk_type);
+		RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton();
+		if (walk_key.is_valid() && index_service != nullptr && index_service->is_populated()) {
+			Ref<RGIndex::ProgramIndex> snapshot = index_service->get_snapshot();
+			const Vector<RGIndex::ProgramIndex::ImplEntry>* entries = snapshot.is_valid() ? snapshot->get_impls().getptr(walk_key) : nullptr;
+			if (entries != nullptr) {
+				for (const RGIndex::ProgramIndex::ImplEntry& entry : *entries) {
+					for (const KeyValue<StringName, RGIndex::MethodDecl>& M : entry.provided) {
+						Ref<GDScriptTraitSignatureSnapshot> signature;
+						signature.instantiate();
+						signature->param_names = M.value.sig.param_names;
+						signature->is_vararg = M.value.sig.is_vararg;
+						_add_trait_attribute_method_completion(M.key, signature, p_add_braces, p_recursion_depth + EditorLanguage::CompletionLocation::OTHER_USER_CODE, r_result);
+					}
+				}
 			}
 		}
-
 		if (walk_type.kind == GDScriptParser::DataType::CLASS && walk_type.class_type != nullptr) {
 			GDScriptParser::DataType next_walk = walk_type.class_type->base_type;
 			if (next_walk.kind == GDScriptParser::DataType::UNRESOLVED) {

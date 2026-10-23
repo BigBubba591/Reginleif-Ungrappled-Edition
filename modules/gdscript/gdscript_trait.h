@@ -39,15 +39,33 @@
 #include "core/templates/hash_map.h"
 
 
+struct GDScriptDetachedType {
+	GDScriptParser::DataType base;
+	String class_path;
+	StringName class_fqcn;
+	String generic_owner_class_path;
+	StringName generic_owner_class_fqcn;
+	StringName generic_owner_function_name;
+	Vector<GDScriptDetachedType> elements; ///container_element_types
+	HashMap<StringName, GDScriptDetachedType> bindings; ///generic_type_bindings
+
+	static GDScriptDetachedType detach(const GDScriptParser::DataType& p_type);
+	GDScriptParser::DataType resolve(GDScriptParser* p_current) const;
+};
+
 class GDScriptTraitSignatureSnapshot : public RefCounted {
 	GDSOFTCLASS(GDScriptTraitSignatureSnapshot, RefCounted);
 
 public:
-	Vector<GDScriptParser::DataType> param_types;
 	Vector<StringName> param_names;
-	GDScriptParser::DataType return_type;
 	int default_arg_count = 0;
 	bool is_vararg = false;
+
+	Vector<GDScriptDetachedType> param_detached;
+	GDScriptDetachedType return_detached;
+
+	Vector<GDScriptParser::DataType> get_param_types(GDScriptParser* p_current) const;
+	GDScriptParser::DataType get_return_type(GDScriptParser* p_current) const;
 };
 
 /// compiler internal representation of a resolved `trait` declaration

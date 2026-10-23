@@ -31,6 +31,7 @@
 #pragma once
 
 #include "gdscript_function.h"
+#include "runtime_impl_table.h"
 
 #include "core/debugger/engine_debugger.h"
 #include "core/debugger/script_debugger.h"
@@ -461,15 +462,7 @@ class GDScriptLanguage : public ScriptLanguage {
 
 	HashMap<String, ObjectID> orphan_subclasses;
 
-	HashMap<Variant::Type, HashMap<StringName, GDScriptFunction*>> native_impl_methods;
-	HashMap<StringName, HashMap<StringName, GDScriptFunction*>> enum_impl_methods;
-
-	HashMap<StringName, HashMap<StringName, GDScriptFunction*>> native_class_impl_methods;
-
-	HashMap<StringName, HashMap<StringName, GDScriptFunction*>> script_class_impl_methods;
-
-	///"dont rewalk the entire type tree just to find an impl" cache
-	mutable HashMap<StringName, HashMap<StringName, GDScriptFunction*>> native_class_impl_method_cache;
+	RuntimeImplTable impl_table;
 
 #ifdef TOOLS_ENABLED
 	void _extension_loaded(const Ref<GDExtension> &p_extension);

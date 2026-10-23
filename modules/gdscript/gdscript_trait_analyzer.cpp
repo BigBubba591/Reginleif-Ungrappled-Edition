@@ -34,7 +34,131 @@
 #include "gdscript_trait_analyzer.h"
 
 #include "gdscript_analyzer.h"
+#include "program_index_gd.h"
 #include "core/object/class_db.h"
+
+static String _class_path_of(const GDScriptParser::ClassNode* p_class) {
+	if (p_class == nullptr) {
+		return String();
+	}
+	if (!p_class->self_type.script_path.is_empty()) {
+		return p_class->self_type.script_path;
+	}
+	return p_class->fqcn.get_slice("::", 0);
+}
+
+static GDScriptParser::ClassNode* _resolve_class_by_name(GDScriptParser* p_current, const String& p_path, const StringName& p_fqcn) {
+	if (p_fqcn == StringName()) {
+		return nullptr;
+	}
+
+	if (p_current != nullptr && (p_path.is_empty() || GDScript::is_canonically_equal_paths(p_path, p_current->get_script_path()))) {
+		return p_current->find_class(String(p_fqcn));
+	}
+
+	if (p_path.is_empty()) {
+		return nullptr;
+	}
+
+	Ref<GDScriptParserRef> ref;
+	if (p_current != nullptr) {
+		ref = p_current->get_depended_parser_for(p_path);
+	} else {
+		Error err = OK;
+		ref = GDScriptCache::get_parser(p_path, GDScriptParserRef::EMPTY, err);
+	}
+
+	if (ref.is_null()) {
+		return nullptr;
+	}
+
+	ref->raise_status(GDScriptParserRef::INTERFACE_SOLVED); ///ignore
+	if (ref->get_parser() == nullptr) {
+		return nullptr;
+	}
+
+	return ref->get_parser()->find_class(String(p_fqcn));
+}
+
+GDScriptDetachedType GDScriptDetachedType::detach(const GDScriptParser::DataType& p_type) {
+	GDScriptDetachedType out;
+	out.base = p_type;
+
+	if (p_type.class_type != nullptr) {
+		out.class_path = _class_path_of(p_type.class_type);
+		out.class_fqcn = p_type.class_type->fqcn;
+	}
+
+	if (p_type.generic_owner_class != nullptr) {
+		out.generic_owner_class_path = _class_path_of(p_type.generic_owner_class);
+		out.generic_owner_class_fqcn = p_type.generic_owner_class->fqcn;
+		if (p_type.generic_owner_function != nullptr && p_type.generic_owner_function->identifier != nullptr) {
+			out.generic_owner_function_name = p_type.generic_owner_function->identifier->name;
+		}
+	}
+
+	out.base.class_type = nullptr;
+	out.base.generic_owner_class = nullptr;
+	out.base.generic_owner_function = nullptr;
+	out.base.container_element_types.clear();
+	out.base.generic_type_bindings.clear();
+
+	for (const GDScriptParser::DataType& element : p_type.container_element_types) {
+		out.elements.push_back(detach(element));
+	}
+
+	for (const KeyValue<StringName, GDScriptParser::DataType>& B : p_type.generic_type_bindings) {
+		out.bindings[B.key] = detach(B.value);
+	}
+	return out;
+}
+
+GDScriptParser::DataType GDScriptDetachedType::resolve(GDScriptParser* p_current) const {
+	GDScriptParser::DataType out = base;
+	if (class_fqcn != StringName()) {
+		out.class_type = _resolve_class_by_name(p_current, class_path, class_fqcn);
+		if (out.class_type == nullptr) {
+
+			///the class disappeared from under my fucking feet... what the flying fuck?! how DID this happen??
+			WARN_PRINT_ONCE(vformat("[Reginleif] Could not re-resolve class \"%s\" in a trait signature, thereby treating it as Variant.", String(class_fqcn)));
+			return GDScriptParser::DataType::get_variant_type();
+
+		}
+	}
+
+	if (generic_owner_class_fqcn != StringName()) {
+		out.generic_owner_class = _resolve_class_by_name(p_current, generic_owner_class_path, generic_owner_class_fqcn);
+
+		if (out.generic_owner_class != nullptr && generic_owner_function_name != StringName()) {
+			const GDScriptParser::ClassNode* owner = out.generic_owner_class;
+			HashMap<StringName, uint32_t>::ConstIterator found = owner->members_indices.find(generic_owner_function_name);
+			if (found && found->value < owner->members.size() && owner->members[found->value].type == GDScriptParser::ClassNode::Member::FUNCTION) {
+				out.generic_owner_function = owner->members[found->value].function;
+			}
+		}
+	}
+	out.container_element_types.clear();
+	for (const GDScriptDetachedType& element : elements) {
+		out.container_element_types.push_back(element.resolve(p_current));
+	}
+	out.generic_type_bindings.clear();
+	for (const KeyValue<StringName, GDScriptDetachedType>& B : bindings) {
+		out.generic_type_bindings[B.key] = B.value.resolve(p_current);
+	}
+	return out;
+}
+
+Vector<GDScriptParser::DataType> GDScriptTraitSignatureSnapshot::get_param_types(GDScriptParser* p_current) const {
+	Vector<GDScriptParser::DataType> out;
+	for (const GDScriptDetachedType& detached : param_detached) {
+		out.push_back(detached.resolve(p_current));
+	}
+	return out;
+}
+
+GDScriptParser::DataType GDScriptTraitSignatureSnapshot::get_return_type(GDScriptParser* p_current) const {
+	return return_detached.resolve(p_current);
+}
 
 static Ref<GDScriptTraitSignatureSnapshot> _make_trait_method_signature_snapshot(const GDScriptParser::FunctionNode* p_method) {
 	Ref<GDScriptTraitSignatureSnapshot> snapshot;
@@ -43,30 +167,21 @@ static Ref<GDScriptTraitSignatureSnapshot> _make_trait_method_signature_snapshot
 		return snapshot;
 	}
 	for (int i = 0; i < p_method->parameters.size(); i++) {
-		snapshot->param_types.push_back(p_method->parameters[i]->type_constraint);
+		snapshot->param_detached.push_back(GDScriptDetachedType::detach(p_method->parameters[i]->type_constraint));
 		snapshot->param_names.push_back(p_method->parameters[i]->identifier != nullptr ? p_method->parameters[i]->identifier->name : StringName());
 		if (p_method->parameters[i]->initializer != nullptr) {
 			snapshot->default_arg_count++;
 		}
 	}
-	snapshot->return_type = p_method->return_type_constraint;
+	snapshot->return_detached = GDScriptDetachedType::detach(p_method->return_type_constraint);
 	snapshot->is_vararg = p_method->is_vararg();
+
 	return snapshot;
 }
 
 GDScriptTraitAnalyzer::GDScriptTraitAnalyzer(GDScriptParser* p_parser, GDScriptAnalyzer* p_analyzer) {
 	parser = p_parser;
 	analyzer = p_analyzer;
-}
-
-void GDScriptTraitAnalyzer::_wipe_stale_claims_once() {
-	if (wiped_stale_claims_for_this_pass) {
-		return;
-	}
-	wiped_stale_claims_for_this_pass = true;
-	///wipe old claims from a previous pass before this pass adds fresh ones,
-	///otherwise reanalysis just piles up duplicates forever :<
-	GDScriptCache::remove_global_impls_by_path(parser->get_script_path());
 }
 
 void GDScriptTraitAnalyzer::push_error(const String& p_message, const GDScriptParser::Node* p_source) {
@@ -168,8 +283,6 @@ Error GDScriptTraitAnalyzer::resolve_trait(GDScriptParser::TraitNode* p_trait) {
 
 Error GDScriptTraitAnalyzer::resolve_impl(GDScriptParser::ImplNode* p_impl) {
 	ERR_FAIL_NULL_V(p_impl, ERR_INVALID_PARAMETER);
-
-	_wipe_stale_claims_once();
 
 	StringName trait_name;
 
@@ -368,73 +481,23 @@ Error GDScriptTraitAnalyzer::resolve_impl(GDScriptParser::ImplNode* p_impl) {
 	///force-resolve any file, that claims something on that chain, 
 	///then check for name collisions against our own. simple enough? simple enough. probably. 
 	///if you don't get it, this just mirrors the pattern that already exists in the damned analyser.
-	GDScriptParser::DataType walk_type = target_type;
-	while (ok) {
-		StringName walk_key = _impl_target_key(walk_type);
-
-		///if this walk step IS a class declared in the file we're currently analyzing, skip the
-		///path-based force-resolve entirely, because comparing derived paths as strings here risks a
-		///normalisation mismatch that force-resolves our own file MID FUCKING ANALYSIS, 
-		///which is exactly the reentrancy footgun the trait lookup code above already 
-		///learnt the hard fucking way
-		bool is_current_file_class = walk_type.kind == GDScriptParser::DataType::CLASS &&
-				walk_type.class_type != nullptr && parser->has_class(walk_type.class_type);
-
-		if (walk_key != StringName()) {
-			if (!is_current_file_class) {
-				String owning_path = _owning_path_for_type(walk_type);
-				if (!owning_path.is_empty() && !GDScript::is_canonically_equal_paths(owning_path, parser->get_script_path())) {
-					///force that file fully resolved so its own impls (and thus its own claims)
-					///actually exist before we go trusting the registry for its type key
-					Error dep_err = OK;
-					GDScriptCache::get_parser(owning_path, GDScriptParserRef::FULLY_SOLVED, dep_err, parser->get_script_path());
+	if (RGIndex::ProgramIndexService* index_service = RGIndex::ProgramIndexService::get_singleton()) {
+		if (index_service->is_populated()) {
+			Ref<RGIndex::ProgramIndex> snapshot = index_service->get_snapshot();
+			const Vector<RGIndex::ProgramIndex::Diagnostic>* diags = snapshot->get_diagnostics_for(RGIndex::canonical_path(parser->get_script_path()));
+			if (diags != nullptr) {
+				for (const RGIndex::ProgramIndex::Diagnostic& d : *diags) {
+					if (d.is_error && d.line == p_impl->start_line && d.message.begins_with("[cross-file] ")) {
+						push_error(String(R"([Reginleif] )") + d.message.trim_prefix("[cross-file] "), p_impl);
+						ok = false;
+					}
 				}
 			}
-
-			for (const GDScriptCache::GlobalImplClaim& claim : GDScriptCache::get_global_impl_claims(walk_key)) {
-				if (claim.trait_name == trait_name && GDScript::is_canonically_equal_paths(claim.owning_path, parser->get_script_path())) {
-					continue; /// case 1, that's just us, from a previous pass, not a real collision
-				}
-				if (claim.trait_name == trait_name) {
-					continue; /// case 2, same trait implemented for some random bumfuck ancestor elsewhere, not my problem
-				}
-				if (!gd_impl->provided_methods.has(claim.method_name)) {
-					continue;
-				}
-				///only the exact type we're impling on cares about the 'derivedness'(?) property , so if we're
-				///walking an ancestor, WE are always the more derived side by construction, so any
-				///name match here is us legitimately overriding, not colliding. side note i really need a better name than
-				///uhh. 'derivedness'.
-				if (walk_type != target_type) {
-					continue;
-				}
-				push_error(vformat(R"([Reginleif] Method "%s" is provided by both trait "%s" (in this file) and trait "%s" (in "%s") for the same type. Ambiguous dispatch.)",
-						claim.method_name, trait_name, claim.trait_name, claim.owning_path), p_impl);
-				ok = false;
-			}
 		}
-
-		if (walk_type.kind != GDScriptParser::DataType::CLASS || walk_type.class_type == nullptr) {
-			break; ///natives don't have a type chain lol
-		}
-		GDScriptParser::DataType next_walk = walk_type.class_type->base_type;
-		if (next_walk.kind == GDScriptParser::DataType::UNRESOLVED) {
-			break;
-		}
-		walk_type = next_walk;
 	}
 
 	resolved_impls.push_back(gd_impl);
 	p_impl->resolved_gd_impl = gd_impl; ///stash for the compiler, it has no analyzer access of its own
-
-	///register our own claims globally so other files checking THEIR impls against us
-	///actually see what WE provided, not just what's local to their own file.
-	///makes sure the analyser doesn't fucking shit its pants when wanting to check a claim
-	///that doesnt belong to its own file
-	StringName our_key = _impl_target_key(target_type);
-	if (our_key != StringName()) {
-		GDScriptCache::add_global_impl_claims(our_key, trait_name, gd_impl->provided_signatures, parser->get_script_path());
-	}
 
 	///how much longer must a man keep fighting for? :sob:
 
@@ -506,15 +569,16 @@ bool GDScriptTraitAnalyzer::_signatures_match(const Ref<GDScriptTraitSignatureSn
 		return false;
 	}
 
-	if (p_required->param_types.size() != p_provided->parameters.size()) {
+	if (p_required->param_names.size() != p_provided->parameters.size()) {
 		return false;
 	}
 	if (p_required->is_vararg != p_provided->is_vararg()) {
 		return false;
 	}
 
-	for (int i = 0; i < p_required->param_types.size(); i++) {
-		GDScriptParser::DataType required_param_type = p_required->param_types[i];
+	const Vector<GDScriptParser::DataType> required_param_types = p_required->get_param_types(parser);
+	for (int i = 0; i < required_param_types.size(); i++) {
+		GDScriptParser::DataType required_param_type = required_param_types[i];
 		GDScriptParser::DataType provided_param_type = p_provided->parameters[i]->type_constraint;
 
 		///parameters are contravariant in general, but gdscript doesn't do variance gymnastics
@@ -526,7 +590,7 @@ bool GDScriptTraitAnalyzer::_signatures_match(const Ref<GDScriptTraitSignatureSn
 		}
 	}
 
-	GDScriptParser::DataType required_return = p_required->return_type;
+	GDScriptParser::DataType required_return = p_required->get_return_type(parser);
 	GDScriptParser::DataType provided_return = p_provided->return_type_constraint;
 
 	const bool required_return_is_void = required_return.kind == GDScriptParser::DataType::BUILTIN && required_return.builtin_type == Variant::NIL && required_return.is_hard_type();
@@ -604,31 +668,6 @@ bool GDScriptTraitAnalyzer::_type_is_or_inherits(const GDScriptParser::DataType&
 	return false;
 }
 
-StringName GDScriptTraitAnalyzer::_impl_target_key(const GDScriptParser::DataType& p_type) const {
-	if (p_type.kind == GDScriptParser::DataType::BUILTIN) {
-		///value types like int/String/Vector2. identified by the Variant::Type enum itself
-		return StringName("builtin::" + itos((int)p_type.builtin_type));
-	}
-	if (p_type.kind == GDScriptParser::DataType::NATIVE) {
-		//native Object-derived classes like Node, RefCounted. identified by name
-		return StringName("native::" + String(p_type.native_type));
-	}
-	if (p_type.kind == GDScriptParser::DataType::CLASS && p_type.class_type != nullptr) {
-		return StringName("class::" + p_type.class_type->fqcn);
-	}
-	if (p_type.kind == GDScriptParser::DataType::ENUM) {
-		return StringName("enum::" + String(p_type.native_type));
-	}
-	return StringName(); ///not a type we do cross-file impl tracking for
-}
-
-String GDScriptTraitAnalyzer::_owning_path_for_type(const GDScriptParser::DataType& p_type) const {
-	if (p_type.kind == GDScriptParser::DataType::CLASS && p_type.class_type != nullptr) {
-		return p_type.class_type->fqcn.get_slice("::", 0);
-	}
-	return String(); ///natives don't live in any file, nothing to force-resolve
-}
-
 bool GDScriptTraitAnalyzer::type_satisfies_trait(const GDScriptParser::DataType& p_concrete_type, const Ref<GDScriptTrait>& p_trait) const {
 	if (p_trait.is_null()) {
 		return false;
@@ -644,47 +683,18 @@ bool GDScriptTraitAnalyzer::type_satisfies_trait(const GDScriptParser::DataType&
 		}
 	}
 
-	///not satisfied locally, check the global impl-claim registry for cross-file impls!
+	///not satisfied locally, check the program index for cross-file impls!
 	return global_claims_satisfy_trait(p_concrete_type, p_trait->name);
 }
 
 bool GDScriptTraitAnalyzer::global_claims_satisfy_trait(const GDScriptParser::DataType& p_concrete_type, const StringName& p_trait_name) const {
-	GDScriptParser::DataType walk_type = p_concrete_type;
-
-	while (true) {
-		StringName walk_key = _impl_target_key(walk_type);
-
-		if (walk_key != StringName()) {
-			for (const GDScriptCache::GlobalImplClaim& claim : GDScriptCache::get_global_impl_claims(walk_key)) {
-				if (claim.trait_name == p_trait_name) {
-					return true;
-				}
-			}
+	{
+		RGIndex::ProgramIndexService* svc = RGIndex::ProgramIndexService::get_singleton();
+		const RGIndex::TypeKey key = RGIndex::type_key_from_datatype(p_concrete_type, parser->get_script_path());
+		if (svc != nullptr && svc->is_populated() && key.is_valid()) {
+			RGIndex::IndexView view(svc->get_snapshot(), nullptr);
+			return view.implements(key, p_trait_name);
 		}
-
-		if (walk_type.kind == GDScriptParser::DataType::CLASS && walk_type.class_type != nullptr) {
-			GDScriptParser::DataType next_walk = walk_type.class_type->base_type;
-			if (next_walk.kind == GDScriptParser::DataType::UNRESOLVED) {
-				break;
-			}
-			walk_type = next_walk;
-			continue;
-		}
-
-		if (walk_type.kind == GDScriptParser::DataType::NATIVE && walk_type.native_type != StringName()) {
-			StringName parent_native = ClassDB::get_parent_class(walk_type.native_type);
-			if (parent_native == StringName()) {
-				break;
-			}
-			GDScriptParser::DataType native_walk;
-			native_walk.kind = GDScriptParser::DataType::NATIVE;
-			native_walk.builtin_type = Variant::OBJECT;
-			native_walk.native_type = parent_native;
-			walk_type = native_walk;
-			continue;
-		}
-
-		break;
 	}
 
 	return false;
