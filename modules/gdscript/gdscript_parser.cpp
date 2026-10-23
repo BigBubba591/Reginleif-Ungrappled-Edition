@@ -1085,7 +1085,7 @@ void GDScriptParser::parse_class_name() {
 
 	make_completion_context(COMPLETION_DECLARATION, current_class);
 
-	if (match(GDScriptTokenizer::Token::EXTENDS)) {
+	if (match(GDScriptTokenizer::Token::EXTENDS) || match(GDScriptTokenizer::Token::COLON)) {
 		// Allow extends on the same line.
 		parse_extends();
 		end_statement("superclass");
