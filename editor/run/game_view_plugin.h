@@ -213,7 +213,9 @@ class GameView : public VBoxContainer {
 	Ref<ButtonGroup> n3d_group;
 
 	Button *node_type_button[RuntimeNodeSelect::NODE_TYPE_MAX];
-	Button *ci_button[CanvasItemManipulator::TOOL_MAX];
+	// Not all CI tools have buttons, so make sure the gaps are at least initialized with null.
+	Button *ci_button[CanvasItemManipulator::TOOL_MAX] = {};
+	Button *ci_local_space = nullptr;
 	Button *n3d_button[RuntimeNodeSelect::SELECT_MODE_MAX];
 
 	MenuButton *n3d_options_menu = nullptr;
@@ -343,8 +345,15 @@ class GameViewPluginBase : public EditorPlugin {
 	bool _is_window_wrapper_enabled() const;
 	void _dock_visibility_changed(EditorDock *p_dock);
 
+#ifdef ANDROID_ENABLED
+	void _on_show_game_dock();
+#endif
+
 protected:
 	void _notification(int p_what);
+
+	static void _bind_methods();
+
 #ifndef ANDROID_ENABLED
 	void setup(Ref<GameViewDebugger> p_debugger, EmbeddedProcessBase *p_embedded_process);
 #else

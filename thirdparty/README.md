@@ -109,7 +109,7 @@ Files extracted from upstream source:
 ## certs
 
 - Upstream: Mozilla, via https://github.com/bagder/ca-bundle
-- Version: git (38fe30abb189fb714e8b1f1b354c6c4caffbe6dc, 2026)
+- Version: git (c4d4f0b9ed23c6ef1d19ad2565598cf0c2b24112, 2026)
 - License: MPL 2.0
 
 Files extracted from upstream source:
@@ -484,7 +484,7 @@ Files extracted from upstream source:
 ## icu4c
 
 - Upstream: https://github.com/unicode-org/icu
-- Version: 78.3 (21d1eb0f306e1141c10931e914dfc038c06121da, 2026)
+- Version: 79.1 (ddc6b66926bfac6036144ca9902992a0d6d50af9, 2026)
 - License: Unicode
 
 Files extracted from upstream source:
@@ -507,6 +507,11 @@ Files generated from upstream source:
    `ICU_DATA_FILTER_FILE={GODOT_SOURCE}/thirdparty/icu4c/godot_data.json ./runConfigureICU {PLATFORM} --with-data-packaging=common`
 4. Delete `data/out` folder and rebuild data: `cd data && rm -rf ./out && make`
 5. Copy `source/data/out/icudt{ICU_VERSION}l.dat` to the `{GODOT_SOURCE}/thirdparty/icu4c/icudt_godot.dat`
+
+Patches:
+
+- `0001-ustr-literals.patch` ([GH-124792](https://github.com/godotengine/godot/pull/124792))
+- `0002-tuple-include.patch` ([GH-124792](https://github.com/godotengine/godot/pull/124792))
 
 
 ## jolt_physics
@@ -604,7 +609,7 @@ Files extracted from upstream source:
 ## libpng
 
 - Upstream: http://libpng.org/pub/png/libpng.html
-- Version: 1.6.58 (3061454d980de7d53608f594194cfac722721d2a, 2026)
+- Version: 1.6.59 (cd952f49f95bb27154ae77dbb103032d95f6e580, 2026)
 - License: libpng/zlib
 
 Files extracted from upstream source:
@@ -853,9 +858,9 @@ Collection of single-file libraries used in Godot components.
   * Version: git (1bf9bc04673df55dc554021b768006836f69d53a, 2026)
   * License: MIT
   * Modifications: Added implementation through `qoa.c`.
-- `r128.{c,h}`
+- `r128.h`
   * Upstream: https://github.com/fahickman/r128
-  * Version: git (6fc177671c47640d5bb69af10cf4ee91050015a1, 2023)
+  * Version: 1.6.2 (69ba68f1ea666c9136cf56e0105b0cbbe9cd1534, 2026)
   * License: Public Domain or Unlicense
 - `smaz.{c,h}`
   * Upstream: https://github.com/antirez/smaz
@@ -864,6 +869,7 @@ Collection of single-file libraries used in Godot components.
   * Modifications: License included in header.
   * Patches:
     - `smaz-0001-write-string-warning.patch` ([GH-8572](https://github.com/godotengine/godot/pull/8572))
+    - `smaz-0002-decompress-input-bounds.patch` ([GH-124701](https://github.com/godotengine/godot/pull/124701))
 - `smolv.{cpp,h}`
   * Upstream: https://github.com/aras-p/smol-v
   * Version: git (9dd54c379ac29fa148cb1b829bb939ba7381d8f4, 2024)
@@ -1108,7 +1114,7 @@ Files extracted from upstream source:
 ## thorvg
 
 - Upstream: https://github.com/thorvg/thorvg
-- Version: 1.0.3 (d114cd9e3c32d7f77bc9b324ae5c71d7775cb7ae, 2026)
+- Version: 1.1.3 (589bc4120f2097fb1b135e552c2ef39f6581612b, 2026)
 - License: MIT
 
 Files extracted from upstream source:
@@ -1143,7 +1149,7 @@ Patches:
 ## ufbx
 
 - Upstream: https://github.com/ufbx/ufbx
-- Version: 0.23.0 (fcc5d6ba444cfd3eb80677dba5e37e493941abe5, 2026)
+- Version: 0.23.1 (26a482ae66871d7de36eb722aa060bce95bce274, 2026)
 - License: MIT
 
 Files extracted from upstream source:
