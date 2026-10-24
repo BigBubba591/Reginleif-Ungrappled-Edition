@@ -5432,6 +5432,7 @@ static Error _lookup_impl_method_via_index(const GDScriptParser::DataType& p_bas
 
 	const RGIndex::MethodSig& method_sig = hit.decl.sig;
 	r_result.method_arguments.clear();
+	r_result.method_is_vararg = method_sig.is_vararg;
 	for (int i = 0; i < method_sig.param_types.size(); i++) {
 		Dictionary arg;
 		arg["name"] = i < method_sig.param_names.size() ? String(method_sig.param_names[i]) : vformat("arg%d", i);

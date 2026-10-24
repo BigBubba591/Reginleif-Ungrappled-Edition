@@ -162,6 +162,7 @@ public:
 		String value;
 
 		Array method_arguments;
+		bool method_is_vararg = false;
 
 		// `SCRIPT_LOCATION` and `LOCAL_*` must have, `CLASS_*` can have.
 		String script_path;

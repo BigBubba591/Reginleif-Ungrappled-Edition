@@ -1492,6 +1492,7 @@ void ScriptTextEditor::_show_symbol_tooltip(const String &p_symbol, int p_row, i
 				item_data["is_bitfield"] = result.is_bitfield;
 				item_data["value"] = result.value;
 				item_data["arguments"] = result.method_arguments;
+				item_data["is_vararg"] = result.method_is_vararg;
 				doc_symbol = item_type + "||" + p_symbol + "|" + JSON::stringify(item_data);
 			} break;
 				GODOT_PUSH_IGNORE_DEPRECATION()

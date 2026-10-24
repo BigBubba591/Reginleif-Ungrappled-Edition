@@ -4820,6 +4820,9 @@ void EditorHelpBit::parse_symbol(const String &p_symbol, const String &p_prologu
 		symbol_hint = SYMBOL_HINT_SIGNATURE;
 		help_data.description = item_data.get("description", "").operator String().strip_edges();
 		help_data.doc_type.type = item_data.get("doc_type", "");
+		if (item_data.get("is_vararg", false)) {
+			help_data.qualifiers = "vararg";
+		}
 
 		const Array method_args = item_data.get("arguments", Array());
 		for (const Variant& arg_variant : method_args) {
