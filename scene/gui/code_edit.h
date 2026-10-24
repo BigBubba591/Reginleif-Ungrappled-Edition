@@ -214,6 +214,7 @@ private:
 		Color font_color;
 		Ref<Resource> icon;
 		Variant default_value;
+		String detail;
 		Vector<Pair<int, int>> matches;
 		bool matches_dirty = true; // Must be set when mutating `matches`, so that sorting characteristics are recalculated.
 		int location = LOCATION_OTHER;
@@ -262,6 +263,7 @@ private:
 	void _update_scroll_selected_line(float p_mouse_y);
 	void _filter_code_completion_candidates_impl();
 	bool _should_reset_selected_option_for_new_options(const Vector<CodeCompletionOption> &p_new_options);
+	int _get_code_completion_option_width(const CodeCompletionOption& p_option, int p_offset) const;
 
 	/* Line length guidelines */
 	TypedArray<int> line_length_guideline_columns;
@@ -526,6 +528,7 @@ public:
 	void request_code_completion(bool p_force = false);
 
 	void add_code_completion_option(CodeCompletionKind p_type, const String &p_display_text, const String &p_insert_text, const Color &p_text_color = Color(1, 1, 1), const Ref<Resource> &p_icon = Ref<Resource>(), const Variant &p_value = Variant(), int p_location = LOCATION_OTHER);
+	void add_code_completion_option_with_detail(CodeCompletionKind p_type, const String& p_display_text, const String& p_insert_text, const Color& p_text_color, const Ref<Resource>& p_icon, const Variant& p_value, int p_location, const String& p_detail);
 	void update_code_completion_options(bool p_forced = false);
 
 	TypedArray<Dictionary> get_code_completion_options() const;

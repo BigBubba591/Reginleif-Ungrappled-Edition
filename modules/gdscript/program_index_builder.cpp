@@ -597,6 +597,7 @@ ImplHit ProgramIndex::find_impl_method(const TypeKey& p_type, const StringName& 
 			hit.impl_target = e.target;
 			hit.decl = *m;
 			hit.is_default_method = e.default_provided.has(p_method);
+			hit.impl_line = e.line;
 			return hit;
 		}
 	}

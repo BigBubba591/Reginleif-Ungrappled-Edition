@@ -4229,6 +4229,7 @@ GDScriptParser::TypeNode *GDScriptParser::parse_type(bool p_allow_void) {
 	make_completion_context(p_allow_void ? COMPLETION_TYPE_NAME_OR_VOID : COMPLETION_TYPE_NAME, type);
 
 	if (match(GDScriptTokenizer::Token::IMPL)) {
+		make_completion_context(COMPLETION_TRAIT_BOUND, type);
 		if (!consume(GDScriptTokenizer::Token::IDENTIFIER, R"([Reginleif] Expected trait name after "impl".)")) {
 			complete_extents(type);
 			return type;
@@ -4236,6 +4237,7 @@ GDScriptParser::TypeNode *GDScriptParser::parse_type(bool p_allow_void) {
 		type->trait_bounds.push_back(parse_identifier());
 
 		while (match(GDScriptTokenizer::Token::PLUS)) {
+			make_completion_context(COMPLETION_TRAIT_BOUND, type);
 			if (!consume(GDScriptTokenizer::Token::IDENTIFIER, R"([Reginleif] Expected trait name after "+" in trait bound.)")) {
 				break;
 			}
@@ -4333,6 +4335,9 @@ GDScriptParser::TraitNode* GDScriptParser::parse_trait() {
 		if (match(GDScriptTokenizer::Token::FUNC)) {
 			FunctionNode* method = parse_function(false);
 			if (method == nullptr) { continue; }
+#ifdef TOOLS_ENABLED
+			attach_function_doc(method);
+#endif // TOOLS_ENABLED
 
 			if (method->has_explicit_body) {
 				///has a real body, even if it's empty, so it's a default method
@@ -4422,6 +4427,9 @@ GDScriptParser::ImplNode* GDScriptParser::parse_impl() {
 			FunctionNode* method = parse_function(false);
 			if (method != nullptr) {
 				override_completion_context(method, COMPLETION_IMPL_BODY, impl);
+#ifdef TOOLS_ENABLED
+				attach_function_doc(method);
+#endif // TOOLS_ENABLED
 				///impl methods must actually implement something :>
 				if (!method->has_explicit_body) {
 					push_error(vformat(R"([Reginleif] "impl" method "%s" must have a body.)", method->identifier != nullptr ? String(method->identifier->name) : String()), method);
@@ -4665,6 +4673,19 @@ GDScriptParser::MemberDocData GDScriptParser::parse_doc_comment(int p_line, bool
 	}
 
 	return result;
+}
+
+void GDScriptParser::attach_function_doc(FunctionNode* p_function) {
+	if (p_function == nullptr) {
+		return;
+	}
+	const int doc_comment_line = p_function->start_line - 1;
+	if (has_comment(p_function->start_line, true)) {
+		p_function->doc_data = parse_doc_comment(p_function->start_line, true);
+	} else if (doc_comment_line >= min_member_doc_line && has_comment(doc_comment_line, true) && tokenizer->get_comments()[doc_comment_line].new_line) {
+		p_function->doc_data = parse_doc_comment(doc_comment_line);
+	}
+	min_member_doc_line = p_function->end_line + 1;
 }
 
 GDScriptParser::ClassDocData GDScriptParser::parse_class_doc_comment(int p_line, bool p_single_line) {

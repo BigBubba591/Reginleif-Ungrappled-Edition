@@ -109,6 +109,7 @@ struct TypeRef {
 struct MethodSig {
 	Vector<TypeRef> param_types;
 	Vector<StringName> param_names;
+	Vector<String> param_defaults;
 	TypeRef return_type;
 	int default_arg_count = 0;
 	bool is_vararg = false;
@@ -124,6 +125,7 @@ struct MethodDecl {
 	bool has_body = false;  ///false for required trait fns and abstract fns
 	uint64_t body_hash = 0; ///hash of the source lines spanned by the fn (with signature!!)
 	int start_line = 0;
+	String doc;
 };
 
 
@@ -235,6 +237,7 @@ struct ImplHit {
 	TypeKey impl_target;///the type the impl was declared on (may be an ancestor of the queried type)
 	MethodDecl decl;    ///resolved signature amd body_hash. For default methods this is the TRAIT's decl!!
 	bool is_default_method = false;
+	int impl_line = 0;  ///line of the impl block itself
 };
 
 class ProgramIndex : public RefCounted {

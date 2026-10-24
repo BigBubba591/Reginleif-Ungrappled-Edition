@@ -162,6 +162,120 @@ struct SourceLines {
 		const int b = p_last < starts.size() ? starts[p_last] : source.length();
 		return source.substr(a, b - a).hash64();
 	}
+
+	Vector<String> signature_defaults(int p_func_line, const StringName& p_name, int p_param_count) const {
+		Vector<String> defaults;
+		defaults.resize(p_param_count);
+
+		const int n = source.length();
+		if (n == 0 || p_func_line < 1 || p_func_line > starts.size()) {
+			return defaults;
+		}
+
+		const String name = String(p_name);
+		auto is_ident = [](char32_t c) {
+			return c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c > 127;
+		};
+
+		int i = starts[p_func_line - 1];
+		bool found = false;
+		while (i < n) {
+			const int at = source.find("func", i);
+			if (at < 0) {
+				return defaults;
+			}
+			i = at + 4;
+			if ((at > 0 && is_ident(source[at - 1])) || i >= n || (source[i] != ' ' && source[i] != '\t')) {
+				continue;
+			}
+			int k = i;
+			while (k < n && (source[k] == ' ' || source[k] == '\t')) {
+				k++;
+			}
+			if (source.substr(k, name.length()) == name && (k + name.length() >= n || !is_ident(source[k + name.length()]))) {
+				i = k + name.length();
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			return defaults;
+		}
+
+		while (i < n && source[i] != '(') {
+			i++;
+		}
+		if (i >= n) {
+			return defaults;
+		}
+		i++;
+
+		int depth = 0;
+		int param = 0;
+		int def_start = -1;
+		auto finish = [&](int p_end) {
+			if (param < p_param_count && def_start >= 0) {
+				String text = source.substr(def_start, p_end - def_start).replace("\n", " ").replace("\t", " ").strip_edges();
+				if (text.length() > 40) {
+					text = text.substr(0, 37) + String(U"\u2026");
+				}
+				defaults.write[param] = text;
+			}
+		};
+
+		for (; i < n; i++) {
+			const char32_t c = source[i];
+
+			if (c == '#') {
+				while (i < n && source[i] != '\n') {
+					i++;
+				}
+				continue;
+			}
+
+			if (c == '"' || c == '\'') {
+				const bool triple = i + 2 < n && source[i + 1] == c && source[i + 2] == c;
+				if (triple) {
+					i += 3;
+					while (i + 2 < n && !(source[i] == c && source[i + 1] == c && source[i + 2] == c)) {
+						if (source[i] == '\\') {
+							i++;
+						}
+						i++;
+					}
+					i += 2;
+				} else {
+					i++;
+					while (i < n && source[i] != c && source[i] != '\n') {
+						if (source[i] == '\\') {
+							i++;
+						}
+						i++;
+					}
+				}
+				continue;
+			}
+
+			if (c == '(' || c == '[' || c == '{') {
+				depth++;
+			} else if (c == ')' || c == ']' || c == '}') {
+				if (depth == 0) {
+					finish(i); ///the closing paren of the parameter list
+					return defaults;
+				}
+				depth--;
+			} else if (c == ',' && depth == 0) {
+				finish(i);
+				param++;
+				def_start = -1;
+			} else if (c == '=' && depth == 0 && def_start < 0) {
+				if (i + 1 >= n || source[i + 1] != '=') {
+					def_start = i + 1;
+				}
+			}
+		}
+		return defaults;
+	}
 };
 
 TypeRef _make_type_ref(const GP::TypeNode* p_type, const HashSet<StringName>& p_generics) {
@@ -229,6 +343,7 @@ MethodDecl _make_method(const GP::FunctionNode* p_fn, const HashSet<StringName>&
 	m.name = p_fn->identifier->name;
 
 	HashSet<StringName> generics(p_class_generics);
+	const Vector<String> verbatim_defaults = p_lines.signature_defaults(p_fn->start_line, p_fn->identifier->name, (int)p_fn->parameters.size());
 	for (const GP::IdentifierNode* g : p_fn->generic_parameters) {
 		if (g != nullptr) {
 			generics.insert(g->name);
@@ -239,6 +354,11 @@ MethodDecl _make_method(const GP::FunctionNode* p_fn, const HashSet<StringName>&
 		const GP::ParameterNode* p = p_fn->parameters[i];
 		m.sig.param_types.push_back(_make_type_ref(p->datatype_specifier, generics));
 		m.sig.param_names.push_back(p->identifier != nullptr ? p->identifier->name : StringName());
+		String default_text;
+		if (p->initializer != nullptr) {
+			default_text = i < (uint32_t)verbatim_defaults.size() && !verbatim_defaults[i].is_empty() ? verbatim_defaults[i] : String(U"\u2026");
+		}
+		m.sig.param_defaults.push_back(default_text);
 		if (p->initializer != nullptr) {
 			m.sig.default_arg_count++;
 		}
@@ -250,6 +370,9 @@ MethodDecl _make_method(const GP::FunctionNode* p_fn, const HashSet<StringName>&
 
 	m.has_body = p_fn->has_explicit_body;
 	m.start_line = p_fn->start_line;
+#ifdef TOOLS_ENABLED
+	m.doc = p_fn->doc_data.description;
+#endif // TOOLS_ENABLED
 	m.body_hash = p_lines.hash_lines(p_fn->start_line, p_fn->end_line);
 	return m;
 }
