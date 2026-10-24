@@ -4508,7 +4508,7 @@ String EditorHelpBit::get_as_plain_text(const String &p_symbol, const String &p_
 		new_help_data = _get_signal_help_data(class_name, item_name);
 	} else if (item_type == "annotation") {
 		new_help_data = _get_annotation_help_data(class_name, item_name);
-	} else if (item_type == "local_constant" || item_type == "local_variable") {
+	} else if (item_type == "local_constant" || item_type == "local_variable" || item_type == "local_method") {
 		new_help_data.description = item_data.get("description", "").operator String().strip_edges();
 		if (item_data.get("is_deprecated", false)) {
 			const String deprecated_message = item_data.get("deprecated_message", "").operator String().strip_edges();
@@ -4815,6 +4815,21 @@ void EditorHelpBit::parse_symbol(const String &p_symbol, const String &p_prologu
 		help_data.doc_type.enumeration = item_data.get("enumeration", "");
 		help_data.doc_type.is_bitfield = item_data.get("is_bitfield", false);
 		help_data.value = item_data.get("value", "");
+	} else if (item_type == "local_method") {
+		symbol_type = TTR("Method");
+		symbol_hint = SYMBOL_HINT_SIGNATURE;
+		help_data.description = item_data.get("description", "").operator String().strip_edges();
+		help_data.doc_type.type = item_data.get("doc_type", "");
+
+		const Array method_args = item_data.get("arguments", Array());
+		for (const Variant& arg_variant : method_args) {
+			const Dictionary arg_dict = arg_variant;
+			ArgumentData arg;
+			arg.name = arg_dict.get("name", "");
+			arg.doc_type.type = arg_dict.get("type", "");
+			arg.default_value = arg_dict.get("default", "");
+			help_data.arguments.push_back(arg);
+		}
 	} else if (item_type == "resource") {
 		String path = item_name.simplify_path();
 		const bool is_uid = path.begins_with("uid://");

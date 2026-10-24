@@ -96,6 +96,7 @@ public:
 		Variant default_value;
 		int location = CompletionLocation::OTHER;
 		String theme_color_name;
+		String detail; ///
 
 		CompletionOption() = default;
 
@@ -136,6 +137,7 @@ public:
 			CLASS_ANNOTATION,
 			LOCAL_CONSTANT,
 			LOCAL_VARIABLE,
+			SCRIPT_METHOD,
 		};
 
 		Type type;
@@ -158,6 +160,8 @@ public:
 
 		// For `LOCAL_*`.
 		String value;
+
+		Array method_arguments;
 
 		// `SCRIPT_LOCATION` and `LOCAL_*` must have, `CLASS_*` can have.
 		String script_path;

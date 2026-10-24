@@ -1481,6 +1481,7 @@ public:
 		COMPLETION_INHERIT_TYPE, // Type after extends. Exclude non-viable types (built-ins, enums, void). Includes subtypes using the argument index.
 		COMPLETION_METHOD, // List available methods in scope.
 		COMPLETION_TRAIT_NAME, ///trait name after "impl"
+		COMPLETION_TRAIT_BOUND, ///trait name inside a type bound
 		COMPLETION_TRAIT_BODY, ///statement start inside a trait body, only "func" and "impl" are legal
 		COMPLETION_IMPL_BODY, ///statement start inside an "impl" body, fetches unimplemented trait methods
 		COMPLETION_OVERRIDE_METHOD, // Override implementation, also for native virtuals.
@@ -1844,6 +1845,7 @@ private:
 	bool has_comment(int p_line, bool p_must_be_doc = false);
 	MemberDocData parse_doc_comment(int p_line, bool p_single_line = false);
 	ClassDocData parse_class_doc_comment(int p_line, bool p_single_line = false);
+	void attach_function_doc(FunctionNode* p_function);
 #endif // TOOLS_ENABLED
 
 public:

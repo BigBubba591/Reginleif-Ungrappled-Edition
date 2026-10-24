@@ -209,7 +209,7 @@ void CodeEdit::_notification(int p_what) {
 					AccessibilityServer::get_singleton()->update_set_list_item_index(item, i);
 					AccessibilityServer::get_singleton()->update_set_list_item_level(item, 0);
 					AccessibilityServer::get_singleton()->update_set_list_item_selected(item, i == code_completion_current_selected);
-					AccessibilityServer::get_singleton()->update_set_name(item, code_completion_options[i].display);
+					AccessibilityServer::get_singleton()->update_set_name(item, code_completion_options[i].detail.is_empty() ? code_completion_options[i].display : code_completion_options[i].display + " " + code_completion_options[i].detail);
 					AccessibilityServer::get_singleton()->update_set_bounds(item, Rect2(code_completion_rect.position.x, code_completion_rect.position.y + row_height * i, code_completion_rect.size.x, row_height));
 				}
 			} else {
@@ -416,6 +416,22 @@ void CodeEdit::_notification(int p_what) {
 							RS::get_singleton()->canvas_item_add_rect(ci, Rect2(match_pos + Point2(match_offset, 0), Size2(match_len, row_height)), theme_cache.code_completion_existing_color);
 						}
 						tl->draw(ci, title_pos, code_completion_options[l].font_color);
+
+						const String& option_detail = code_completion_options[l].detail;
+						if (!option_detail.is_empty() && code_completion_options[l].default_value.get_type() != Variant::COLOR) {
+							const float detail_width = theme_cache.font->get_string_size(option_detail, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width;
+							const float display_width = theme_cache.font->get_string_size(code_completion_options[l].display, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width;
+							const float available_width = code_completion_rect.size.width - (icon_area_size.x + theme_cache.code_completion_icon_separation);
+							if (display_width + theme_cache.font_size + detail_width <= available_width) {
+								Color detail_color = code_completion_options[l].font_color;
+								detail_color.a *= 0.55;
+								Ref<TextLine> detail_line;
+								detail_line.instantiate();
+								detail_line->add_string(option_detail, theme_cache.font, theme_cache.font_size, lang);
+								const float detail_x = rtl ? title_pos.x : code_completion_rect.position.x + code_completion_rect.size.width - detail_width;
+								detail_line->draw(ci, Point2(detail_x, title_pos.y), detail_color);
+							}
+						}
 					}
 
 					/* Draw a small scroll rectangle to show a position in the options. */
@@ -2534,6 +2550,30 @@ void CodeEdit::add_code_completion_option(CodeCompletionKind p_type, const Strin
 	code_completion_option_submitted.push_back(completion_option);
 }
 
+void CodeEdit::add_code_completion_option_with_detail(CodeCompletionKind p_type, const String& p_display_text, const String& p_insert_text, const Color& p_text_color, const Ref<Resource>& p_icon, const Variant& p_value, int p_location, const String& p_detail) {
+	CodeCompletionOption completion_option;
+	completion_option.kind = p_type;
+	completion_option.display = p_display_text;
+	completion_option.insert_text = p_insert_text;
+	completion_option.font_color = p_text_color;
+	completion_option.icon = p_icon;
+	completion_option.default_value = p_value;
+	completion_option.location = p_location;
+	completion_option.detail = p_detail;
+	code_completion_option_submitted.push_back(completion_option);
+}
+
+int CodeEdit::_get_code_completion_option_width(const CodeCompletionOption& p_option, int p_offset) const {
+	if (theme_cache.font.is_null()) {
+		return 0;
+	}
+	int width = (int)theme_cache.font->get_string_size(p_option.display, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width + p_offset;
+	if (!p_option.detail.is_empty()) {
+		width += theme_cache.font_size + (int)theme_cache.font->get_string_size(p_option.detail, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width;
+	}
+	return width;
+}
+
 void CodeEdit::update_code_completion_options(bool p_forced) {
 	code_completion_forced = p_forced;
 	code_completion_option_sources = code_completion_option_submitted;
@@ -2606,6 +2646,7 @@ void CodeEdit::confirm_code_completion(bool p_replace) {
 	}
 
 	char32_t caret_last_completion_char = 0;
+	bool retrigger_after_confirm = false;
 	begin_complex_operation();
 	begin_multicaret_edit();
 
@@ -2674,6 +2715,7 @@ void CodeEdit::confirm_code_completion(bool p_replace) {
 		char32_t last_completion_char = insert_text[insert_text.length() - 1];
 		if (i == 0) {
 			caret_last_completion_char = last_completion_char;
+			retrigger_after_confirm = code_completion_options[code_completion_current_selected].kind == CodeCompletionKind::KIND_KEYWORD && last_completion_char == ' ';
 		}
 		char32_t last_completion_char_display = display_text[display_text.length() - 1];
 
@@ -2714,6 +2756,8 @@ void CodeEdit::confirm_code_completion(bool p_replace) {
 	cancel_code_completion();
 	if (code_completion_prefixes.has(caret_last_completion_char)) {
 		request_code_completion();
+	} else if (retrigger_after_confirm) {
+		request_code_completion(true);
 	}
 }
 
@@ -3888,6 +3932,7 @@ void CodeEdit::_filter_code_completion_candidates_impl() {
 			option["icon"] = E.icon;
 			option["default_value"] = E.default_value;
 			option["location"] = E.location;
+			option["detail"] = E.detail;
 			completion_options_sources[i] = option;
 			i++;
 		}
@@ -3913,15 +3958,15 @@ void CodeEdit::_filter_code_completion_candidates_impl() {
 			option.icon = completion_options[i].get("icon");
 			option.location = completion_options[i].get("location");
 			option.default_value = completion_options[i].get("default_value");
+			const Dictionary option_dict = completion_options[i];
+			option.detail = option_dict.get("detail", String());
 
 			int offset = 0;
 			if (option.default_value.get_type() == Variant::COLOR) {
 				offset = line_height;
 			}
 
-			if (theme_cache.font.is_valid()) {
-				max_width = MAX(max_width, theme_cache.font->get_string_size(option.display, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width + offset);
-			}
+			max_width = MAX(max_width, _get_code_completion_option_width(option, offset));
 			code_completion_options_new.push_back(option);
 		}
 
@@ -4053,9 +4098,7 @@ void CodeEdit::_filter_code_completion_candidates_impl() {
 			option.get_option_characteristics(string_to_complete);
 			code_completion_options_new.push_back(option);
 
-			if (theme_cache.font.is_valid()) {
-				max_width = MAX(max_width, theme_cache.font->get_string_size(option.display, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width + offset);
-			}
+			max_width = MAX(max_width, _get_code_completion_option_width(option, offset));
 			continue;
 		}
 
@@ -4130,9 +4173,7 @@ void CodeEdit::_filter_code_completion_candidates_impl() {
 			}
 
 			code_completion_options_new.push_back(option);
-			if (theme_cache.font.is_valid()) {
-				max_width = MAX(max_width, theme_cache.font->get_string_size(option.display, HORIZONTAL_ALIGNMENT_LEFT, -1, theme_cache.font_size).width + offset);
-			}
+			max_width = MAX(max_width, _get_code_completion_option_width(option, offset));
 		}
 	}
 
