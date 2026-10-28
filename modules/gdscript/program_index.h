@@ -93,7 +93,7 @@ struct TypeKeyHasher {
 };
 
 struct TypeRef {
-	enum Kind : uint8_t { VARIANT, VOID, BUILTIN, NAMED, GENERIC_PARAM, TRAIT_BOUND };
+	enum Kind : uint8_t { VARIANT, VOID_TYPE, BUILTIN, NAMED, GENERIC_PARAM, TRAIT_BOUND };
 	Kind kind = VARIANT;
 	Variant::Type builtin = Variant::NIL; ///BUILTIN
 	StringName name;                      ///NAMED: first ident in chain. GENERIC_PARAM: the parameter name
