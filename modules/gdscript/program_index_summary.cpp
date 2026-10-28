@@ -96,7 +96,7 @@ String TypeRef::debug_string() const {
 	switch (kind) {
 		case VARIANT:
 			return "Variant";
-		case VOID:
+		case VOID_TYPE:
 			return "void";
 		case BUILTIN:
 			return Variant::get_type_name(builtin);
@@ -296,7 +296,7 @@ TypeRef _make_type_ref(const GP::TypeNode* p_type, const HashSet<StringName>& p_
 	}
 
 	if (p_type->type_chain.is_empty()) {
-		r.kind = TypeRef::VOID;
+		r.kind = TypeRef::VOID_TYPE;
 		return r;
 	}
 
