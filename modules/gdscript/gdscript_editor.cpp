@@ -575,7 +575,7 @@ String GDScriptLanguage::make_function(const String &p_class, const String &p_na
 	const bool type_hints = true;
 #endif
 
-	String result = "func " + p_name + "(";
+	String result = "function " + p_name + "(";
 	if (p_args.size()) {
 		for (int i = 0; i < p_args.size(); i++) {
 			if (i > 0) {
@@ -593,7 +593,7 @@ String GDScriptLanguage::make_function(const String &p_class, const String &p_na
 			}
 		}
 	}
-	result += String(")") + (type_hints ? " -> void" : "") + ":\n" +
+	result += String(")") + (type_hints ? " : void" : "") + ":\n" +
 			_get_indentation() + "pass # Replace with function body.\n";
 
 	return result;
@@ -1228,8 +1228,8 @@ static bool _impl_already_provides(const GDScriptParser::ImplNode* p_impl, const
 	return false;
 }
 
-///adds a completion option for a single trait method using its live FunctionNode* 
-///!!!NOTE:!!! this is only safe when the node belongs to the parser 
+///adds a completion option for a single trait method using its live FunctionNode*
+///!!!NOTE:!!! this is only safe when the node belongs to the parser
 ///currently servicing this completion request (impl for Type)
 ///formatted the same as an override-method stub: `name(args) -> ReturnType:`.
 static void _add_trait_method_completion_from_node(const GDScriptParser::FunctionNode* p_method, const GDScriptParser::ImplNode* p_impl, bool p_type_hints, HashMap<String, EditorLanguage::CompletionOption>& r_result) {
@@ -2257,7 +2257,7 @@ static void _find_identifiers(const GDScriptParser::CompletionContext &p_context
 	}
 
 	static const char *_keywords_with_space[] = {
-		"and", "not", "or", "in", "as", "class", "class_name", "extends", "is", "func", "signal", "await",
+		"and", "not", "or", "in", "as", "class", "class_name", "extends", "is", "function", "define", "signal", "await",
 		"const", "enum", "static", "var", "if", "elif", "else", "for", "match", "when", "while",
 		"trait", "impl",
 		nullptr
@@ -4506,7 +4506,7 @@ static void _find_call_arguments(GDScriptParser::CompletionContext &p_context, c
 			r_forced = true;
 		} break;
 		case GDScriptParser::COMPLETION_TRAIT_BODY: {
-			EditorLanguage::CompletionOption func_option("func", EditorLanguage::CompletionKind::KEYWORD);
+			EditorLanguage::CompletionOption func_option("function", EditorLanguage::CompletionKind::KEYWORD);
 			options.insert(func_option.display, func_option);
 			EditorLanguage::CompletionOption impl_option("impl", EditorLanguage::CompletionKind::KEYWORD);
 			options.insert(impl_option.display, impl_option);
@@ -4540,7 +4540,7 @@ static void _find_call_arguments(GDScriptParser::CompletionContext &p_context, c
 				}
 			}
 
-			EditorLanguage::CompletionOption func_option("func", EditorLanguage::CompletionKind::KEYWORD);
+			EditorLanguage::CompletionOption func_option("function", EditorLanguage::CompletionKind::KEYWORD);
 			options.insert(func_option.display, func_option);
 			r_forced = true;
 		} break;
@@ -4810,11 +4810,12 @@ static void _find_call_arguments(GDScriptParser::CompletionContext &p_context, c
 						method_hint += ": Array";
 					}
 				}
+				// AUTOCOMPLETE FUNCTION
 				method_hint += ")";
 				if (type_hints) {
-					method_hint += " -> " + _get_visual_datatype(mi.return_val, false, class_name);
+					method_hint += " : " + _get_visual_datatype(mi.return_val, false, class_name);
 				}
-				method_hint += ":";
+				method_hint += " \n{\n\n}";
 
 				EditorLanguage::CompletionOption option(method_hint, EditorLanguage::CompletionKind::FUNCTION);
 				options.insert(option.display, option);

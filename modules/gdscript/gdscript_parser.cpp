@@ -1008,7 +1008,7 @@ GDScriptParser::ClassNode *GDScriptParser::parse_class(bool p_is_static) {
 		parse_generic_parameters(current_class->generic_parameters);
 	}
 
-	if (match(GDScriptTokenizer::Token::EXTENDS)) {
+	if (match(GDScriptTokenizer::Token::EXTENDS) || match(GDScriptTokenizer::Token::COLON_COLON)) {
 		parse_extends();
 	}
 
@@ -1067,7 +1067,11 @@ void GDScriptParser::parse_class_name() {
 
 	make_completion_context(COMPLETION_DECLARATION, current_class);
 
+<<<<<<< Updated upstream
 	if (match(GDScriptTokenizer::Token::EXTENDS)) {
+=======
+	if (match(GDScriptTokenizer::Token::EXTENDS) || match(GDScriptTokenizer::Token::COLON_COLON)) {
+>>>>>>> Stashed changes
 		// Allow extends on the same line.
 		parse_extends();
 		end_statement("superclass");
@@ -1985,7 +1989,7 @@ bool GDScriptParser::parse_function_signature(FunctionNode *p_function, SuiteNod
 	pop_multiline();
 	consume(GDScriptTokenizer::Token::PARENTHESIS_CLOSE, vformat(R"*(Expected closing ")" after %s parameters.)*", p_type));
 
-	if (match(GDScriptTokenizer::Token::FORWARD_ARROW)) {
+	if (match(GDScriptTokenizer::Token::FORWARD_ARROW) || match(GDScriptTokenizer::Token::COLON)) {
 		make_completion_context(COMPLETION_TYPE_NAME_OR_VOID, p_function);
 		p_function->return_type = parse_type(true);
 		if (p_function->return_type == nullptr) {

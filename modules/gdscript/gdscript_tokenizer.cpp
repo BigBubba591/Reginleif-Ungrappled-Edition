@@ -110,7 +110,7 @@ static const char *token_names[] = {
 	"const", // TK_CONST,
 	"enum", // ENUM,
 	"extends", // EXTENDS,
-	"func", // FUNC,
+	"function", // FUNC,
 	"in", // TK_IN,
 	"is", // IS,
 	"namespace", // NAMESPACE
@@ -496,10 +496,12 @@ GDScriptTokenizer::Token GDScriptTokenizerText::annotation() {
 	KEYWORD("break", Token::BREAK) \
 	KEYWORD("breakpoint", Token::BREAKPOINT) \
 	KEYWORD_GROUP('c') \
-	KEYWORD("class", Token::CLASS) \
 	KEYWORD("class_name", Token::CLASS_NAME) \
+	KEYWORD("class", Token::CLASS_NAME) \
 	KEYWORD("const", Token::TK_CONST) \
 	KEYWORD("continue", Token::CONTINUE) \
+	KEYWORD_GROUP('d') \
+	KEYWORD("define", Token::CLASS) \
 	KEYWORD_GROUP('e') \
 	KEYWORD("elif", Token::ELIF) \
 	KEYWORD("else", Token::ELSE) \
@@ -508,6 +510,8 @@ GDScriptTokenizer::Token GDScriptTokenizerText::annotation() {
 	KEYWORD_GROUP('f') \
 	KEYWORD("for", Token::FOR) \
 	KEYWORD("func", Token::FUNC) \
+	KEYWORD("fn", Token::FUNC) \
+	KEYWORD("function", Token::FUNC) \
 	KEYWORD_GROUP('i') \
 	KEYWORD("if", Token::IF) \
 	KEYWORD("impl", Token::IMPL) \
@@ -520,6 +524,7 @@ GDScriptTokenizer::Token GDScriptTokenizerText::annotation() {
 	KEYWORD("not", Token::NOT) \
 	KEYWORD_GROUP('o') \
 	KEYWORD("or", Token::OR) \
+	KEYWORD("object", Token::CLASS) \
 	KEYWORD_GROUP('p') \
 	KEYWORD("pass", Token::PASS) \
 	KEYWORD("preload", Token::PRELOAD) \
@@ -550,7 +555,7 @@ GDScriptTokenizer::Token GDScriptTokenizerText::annotation() {
 	KEYWORD("TAU", Token::CONST_TAU)
 
 #define MIN_KEYWORD_LENGTH 2
-#define MAX_KEYWORD_LENGTH 10
+#define MAX_KEYWORD_LENGTH 16
 
 #ifdef DEBUG_ENABLED
 void GDScriptTokenizerText::make_keyword_list() {
@@ -729,9 +734,9 @@ GDScriptTokenizer::Token GDScriptTokenizerText::number() {
 	/// It might be a ".." token, or a "." starting a method call/member access
 	/// (`3.method_call()`), so we check it's not either of those before treating
 	/// it as a decimal point. exponents are still part of the number after a
-	/// trailing decimal point (`123.e4`). if you implement a trait with a method 
+	/// trailing decimal point (`123.e4`). if you implement a trait with a method
 	/// e4, lowkey what the genuine fuck are you doing
-	
+
 	bool dot_starts_exponent = _peek() == '.' && (_peek(1) == 'e' || _peek(1) == 'E') &&
 			(is_digit(_peek(2)) || ((_peek(2) == '+' || _peek(2) == '-') && is_digit(_peek(3))));
 	if (_peek() == '.' && _peek(1) != '.' && (!is_unicode_identifier_start(_peek(1)) || dot_starts_exponent)) {
@@ -1543,7 +1548,7 @@ GDScriptTokenizer::Token GDScriptTokenizerText::scan() {
 				return make_paren_error(c);
 			}
 			return make_token(Token::BRACE_CLOSE);
-			
+
 		// Double characters.
 		///
 		case ':':
